@@ -2,15 +2,15 @@ from django.contrib.auth.models import Permission
 from rest_framework import views, viewsets, filters
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
-from django.db.models import Q
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView, ListAPIView
+from django.db.models import Q, Subquery, OuterRef
 from .models import (
     User,ProjectClient,ProjectBusinessAddress,DomainOrServerThirdPartyServiceProvider,Role,
     ProjectDomain,ProjectServer,ProjectFinance,Team,ProjectTeam,ProjectNature,
     Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,ProjectServiceMember,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,ProjectDocument,
-    ClientAdvance, UserSalary,ProjectExbot
+    ClientAdvance, UserSalary,ProjectExbot,Lead,FollowUp,Schedule
 )
   
 from .serializers import (
@@ -21,7 +21,8 @@ from .serializers import (
     ProjectSerializer,ProjectBaseInformationSerializer,ProjectExcutionSerializer,ProjectTeamMemberSerializer,ProjectServiceSerializer,
     EmployeeDailyActivitySerializer,ActivityLogSerializer,InvoiceSerializer,InvoiceItemSerializer,PaymentSerializer,ActivityExceedCommentSerializer,
     NotificationSerializer,EmployeeLeaveSerializer,CompanySerializer,CompanyProfileSerializer,SalarySerializer,AttendanceSerializer,EmployeeSerializer,OtherIncomeSerializer,OtherExpenseSerializer,RoleSerializer, PermissionSerializer,
-    ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer,ProjectExbotSerializer
+    ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer,ProjectExbotSerializer,
+    LeadSerializer, FollowUpSerializer, ScheduleSerializer, EmployeeSalarySummarySerializer
 )
 
 
@@ -54,6 +55,8 @@ class UserListAPIView(views.APIView):
         is_privileged = any(role.upper() in ['SUPERADMIN', 'ADMIN', 'BILLING'] for role in request.user.role_names) or \
                         request.user.has_perm('djangosimplemissionapp.view_all_employee_performance') or \
                         request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_leads') or \
+                        request.user.has_perm('djangosimplemissionapp.view_own_leads') or \
                         request.user.has_perm('djangosimplemissionapp.view_all_team_performance')
         
         if is_privileged:
@@ -64,7 +67,19 @@ class UserListAPIView(views.APIView):
         
         search_query = request.query_params.get('search', None)
         if search_query:
+            # Check if search query is like USR-0001
+            id_filter = Q()
+            if search_query.upper().startswith('USR-'):
+                try:
+                    numeric_id = int(search_query.split('-')[1])
+                    id_filter = Q(id=numeric_id)
+                except (IndexError, ValueError):
+                    pass
+            elif search_query.isdigit():
+                id_filter = Q(id=int(search_query))
+
             users = users.filter(
+                id_filter |
                 Q(username__icontains=search_query) |
                 Q(first_name__icontains=search_query) |
                 Q(last_name__icontains=search_query) |
@@ -72,6 +87,33 @@ class UserListAPIView(views.APIView):
                 Q(designation__icontains=search_query) |
                 Q(phone_number__icontains=search_query)
             )
+            
+        # Additional filters
+        designation = request.query_params.get('designation')
+        if designation:
+            users = users.filter(designation__icontains=designation)
+            
+        role = request.query_params.get('role')
+        if role:
+            users = users.filter(role__name__icontains=role)
+            
+        status_param = request.query_params.get('status')
+        if status_param:
+            if status_param.lower() == 'active':
+                users = users.filter(is_active=True)
+            elif status_param.lower() == 'inactive':
+                users = users.filter(is_active=False)
+                
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        if start_date and end_date:
+            users = users.filter(date_joined__date__range=[start_date, end_date])
+        elif start_date:
+            users = users.filter(date_joined__date__gte=start_date)
+        elif end_date:
+            users = users.filter(date_joined__date__lte=end_date)
+            
+        users = users.order_by('-date_joined')
             
         paginator = StandardResultsSetPagination()
         result_page = paginator.paginate_queryset(users, request)
@@ -157,6 +199,11 @@ class CurrentUserView(views.APIView):
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['token_version'] = user.token_version
+        return token
 
     def validate(self, attrs):
         data = super().validate(attrs)
@@ -302,9 +349,98 @@ class ClientSummaryListAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['legal_name', 'city']
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        # Calculate statistics from the filtered queryset
+        from django.db.models import Sum
+        
+        # Base invoice queryset filtered by the clients in the current view
+        stats_invoices = Invoice.objects.filter(client_company__in=queryset)
+        
+        # Apply the same date filters to ensure stats match the displayed criteria
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            stats_invoices = stats_invoices.filter(created_at__date__gte=start_date)
+        if end_date:
+            stats_invoices = stats_invoices.filter(created_at__date__lte=end_date)
+
+        total_stats = stats_invoices.aggregate(
+            total_invoiced=Sum('total_amount'),
+            total_paid=Sum('total_paid'),
+            total_balance=Sum('balance_due')
+        )
+
+        response.data['statistics'] = {
+            'total_invoiced': float(total_stats['total_invoiced'] or 0),
+            'total_paid': float(total_stats['total_paid'] or 0),
+            'total_balance': float(total_stats['total_balance'] or 0)
+        }
+
+        return response
+
     def get_queryset(self):
-        # We can add custom filtering here if needed
-        return ProjectBusinessAddress.objects.all().order_by('legal_name')
+        from django.db.models import Sum, DecimalField
+        from django.db.models.functions import Coalesce
+
+        queryset = ProjectBusinessAddress.objects.all().order_by('-id')
+
+        # Annotate aggregated financial fields for filtering
+        queryset = queryset.annotate(
+            annotated_balance_due=Coalesce(Sum('invoices__balance_due'), 0, output_field=DecimalField()),
+            annotated_total_advance=Coalesce(Sum('advances__amount'), 0, output_field=DecimalField()),
+            annotated_remaining_advance=Coalesce(Sum('advances__remaining_amount'), 0, output_field=DecimalField()),
+        )
+
+        # Balance status filter
+        balance_status = self.request.query_params.get('balance_status', None)
+        if balance_status == 'HAS_BALANCE':
+            queryset = queryset.filter(annotated_balance_due__gt=0)
+        elif balance_status == 'NO_BALANCE':
+            queryset = queryset.filter(annotated_balance_due=0)
+
+        # Balance Due range filters
+        min_balance = self.request.query_params.get('min_balance')
+        max_balance = self.request.query_params.get('max_balance')
+        if min_balance:
+            queryset = queryset.filter(annotated_balance_due__gte=min_balance)
+        if max_balance:
+            queryset = queryset.filter(annotated_balance_due__lte=max_balance)
+
+        # Total Advance range filters
+        min_advance = self.request.query_params.get('min_advance')
+        max_advance = self.request.query_params.get('max_advance')
+        if min_advance:
+            queryset = queryset.filter(annotated_total_advance__gte=min_advance)
+        if max_advance:
+            queryset = queryset.filter(annotated_total_advance__lte=max_advance)
+
+        # Remaining Advance range filters
+        min_rem_adv = self.request.query_params.get('min_remaining_advance')
+        max_rem_adv = self.request.query_params.get('max_remaining_advance')
+        if min_rem_adv:
+            queryset = queryset.filter(annotated_remaining_advance__gte=min_rem_adv)
+        if max_rem_adv:
+            queryset = queryset.filter(annotated_remaining_advance__lte=max_rem_adv)
+
+        # Invoice date range filters (filter by invoices created in date range)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            queryset = queryset.filter(invoices__created_at__date__gte=start_date).distinct()
+        if end_date:
+            queryset = queryset.filter(invoices__created_at__date__lte=end_date).distinct()
+
+        return queryset
 
 
 
@@ -330,11 +466,68 @@ class ProjectDomainListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'purchased_from', 'status', 'accrued_by']
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Statistics breakdown
+        base_qs = queryset
+        stats = {
+            'total': base_qs.count(),
+            'active': base_qs.filter(status__iexact='Active').count(),
+            'pending': base_qs.filter(status__iexact='Pending').count(),
+            'expired': base_qs.filter(status__iexact='Expired').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['statistics'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'results': serializer.data,
+            'statistics': stats
+        })
+
     def get_queryset(self):
         from django.utils import timezone
         from django.db.models import Case, When, Value, IntegerField, F
         today = timezone.now().date()
         qs = super().get_queryset()
+
+        # Status filter
+        status = self.request.query_params.get('status')
+        if status:
+            qs = qs.filter(status__iexact=status)
+
+        # Payment Status filter
+        payment_status = self.request.query_params.get('payment_status')
+        if payment_status:
+            qs = qs.filter(payment_status__iexact=payment_status)
+
+        # Invoice Status filter
+        invoice_status = self.request.query_params.get('invoice_status')
+        if invoice_status:
+            qs = qs.filter(invoice_status__iexact=invoice_status)
+
+        # Cost Range filter
+        min_cost = self.request.query_params.get('min_cost')
+        max_cost = self.request.query_params.get('max_cost')
+        if min_cost:
+            qs = qs.filter(cost__gte=min_cost)
+        if max_cost:
+            qs = qs.filter(cost__lte=max_cost)
+
+        # Date Range filter (expiration_date)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(expiration_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(expiration_date__lte=end_date)
+
         return qs.annotate(
             is_expired=Case(
                 When(expiration_date__lt=today, then=Value(1)),
@@ -357,11 +550,68 @@ class ProjectServerListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'server_type', 'purchased_from', 'status', 'accrued_by']
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Statistics breakdown
+        base_qs = queryset
+        stats = {
+            'total': base_qs.count(),
+            'active': base_qs.filter(status__iexact='Active').count(),
+            'pending': base_qs.filter(status__iexact='Pending').count(),
+            'expired': base_qs.filter(status__iexact='Expired').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['statistics'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'results': serializer.data,
+            'statistics': stats
+        })
+
     def get_queryset(self):
         from django.utils import timezone
         from django.db.models import Case, When, Value, IntegerField, F
         today = timezone.now().date()
         qs = super().get_queryset()
+
+        # Status filter
+        status = self.request.query_params.get('status')
+        if status:
+            qs = qs.filter(status__iexact=status)
+
+        # Payment Status filter
+        payment_status = self.request.query_params.get('payment_status')
+        if payment_status:
+            qs = qs.filter(payment_status__iexact=payment_status)
+
+        # Invoice Status filter
+        invoice_status = self.request.query_params.get('invoice_status')
+        if invoice_status:
+            qs = qs.filter(invoice_status__iexact=invoice_status)
+
+        # Cost Range filter
+        min_cost = self.request.query_params.get('min_cost')
+        max_cost = self.request.query_params.get('max_cost')
+        if min_cost:
+            qs = qs.filter(cost__gte=min_cost)
+        if max_cost:
+            qs = qs.filter(cost__lte=max_cost)
+
+        # Date Range filter (expiration_date)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(expiration_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(expiration_date__lte=end_date)
+
         return qs.annotate(
             is_expired=Case(
                 When(expiration_date__lt=today, then=Value(1)),
@@ -384,11 +634,73 @@ class ProjectExbotListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['whatsapp_number', 'plan_category', 'status', 'payment_status']
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Statistics breakdown
+        base_qs = queryset
+        stats = {
+            'total': base_qs.count(),
+            'active': base_qs.filter(status__iexact='Active').count(),
+            'pending': base_qs.filter(status__iexact='Pending').count(),
+            'expired': base_qs.filter(status__iexact='Expired').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['statistics'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'results': serializer.data,
+            'statistics': stats
+        })
+
     def get_queryset(self):
         from django.utils import timezone
         from django.db.models import Case, When, Value, IntegerField, F
         today = timezone.now().date()
         qs = super().get_queryset()
+
+        # Status filter
+        status = self.request.query_params.get('status')
+        if status:
+            qs = qs.filter(status__iexact=status)
+
+        # Payment Status filter
+        payment_status = self.request.query_params.get('payment_status')
+        if payment_status:
+            qs = qs.filter(payment_status__iexact=payment_status)
+
+        # Invoice Status filter
+        invoice_status = self.request.query_params.get('invoice_status')
+        if invoice_status:
+            qs = qs.filter(invoice_status__iexact=invoice_status)
+
+        # Rate Range filter
+        min_rate = self.request.query_params.get('min_rate')
+        max_rate = self.request.query_params.get('max_rate')
+        if min_rate:
+            qs = qs.filter(plan_rate__gte=min_rate)
+        if max_rate:
+            qs = qs.filter(plan_rate__lte=max_rate)
+
+        # Plan Category filter
+        plan_category = self.request.query_params.get('plan_category')
+        if plan_category:
+            qs = qs.filter(plan_category__icontains=plan_category)
+
+        # Date Range filter (plan_deactive_date)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(plan_deactive_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(plan_deactive_date__lte=end_date)
+
         return qs.annotate(
             is_expired=Case(
                 When(status__iexact='Expired', then=Value(1)),
@@ -456,12 +768,68 @@ class ProjectNatureDetailAPIView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]                  
 
 class ProjectListCreateAPIView(ListCreateAPIView):
-    queryset = Project.objects.all()
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['description', 'status', 'project_nature__name']
+    search_fields = ['name', 'description', 'status', 'project_nature__name', 'project_clients__company_name', 'project_business_addresses__legal_name', 'project_base_informations__name']
+
+    def get_queryset(self):
+        queryset = Project.objects.all().order_by('-created_at')
+        
+        status = self.request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(status__iexact=status)
+            
+        nature = self.request.query_params.get('nature')
+        if nature:
+            queryset = queryset.filter(project_nature__name__icontains=nature)
+            
+        client = self.request.query_params.get('client')
+        if client:
+            queryset = queryset.filter(
+                Q(project_business_addresses__legal_name__icontains=client) |
+                Q(project_clients__company_name__icontains=client)
+            ).distinct()
+            
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date and end_date:
+            queryset = queryset.filter(created_at__date__range=[start_date, end_date])
+        elif start_date:
+            queryset = queryset.filter(created_at__date__gte=start_date)
+        elif end_date:
+            queryset = queryset.filter(created_at__date__lte=end_date)
+            
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Calculate global stats for the filtered queryset (ignoring pagination)
+        stats = {
+            'total': queryset.count(),
+            'pending': queryset.filter(status__iexact='Pending').count(),
+            'completed': queryset.filter(Q(status__iexact='Completed') | Q(status__iexact='Done')).count(),
+            'progressing': queryset.exclude(status__iexact='Pending')
+                                .exclude(status__iexact='Completed')
+                                .exclude(status__iexact='Done')
+                                .count()
+        }
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['stats'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'count': len(serializer.data),
+            'results': serializer.data,
+            'stats': stats
+        })
 
 class ProjectSummaryListAPIView(ListCreateAPIView):
     queryset = Project.objects.all()
@@ -469,7 +837,7 @@ class ProjectSummaryListAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['name', 'status']
+    search_fields = ['name', 'status', 'project_base_informations__name']
 
 class ProjectDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Project.objects.all()
@@ -785,9 +1153,58 @@ class ClientInvoiceListAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        client_id = self.kwargs.get('client_id')
+        
+        # Statistics breakdown for this client
+        base_qs = queryset
+        stats = {
+            'total': base_qs.count(),
+            'paid': base_qs.filter(status__iexact='PAID').count(),
+            'partial': base_qs.filter(status__iexact='PARTIAL').count(),
+            'unpaid': base_qs.filter(status__iexact='UNPAID').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['statistics'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'results': serializer.data,
+            'statistics': stats
+        })
+
     def get_queryset(self):
         client_id = self.kwargs.get('client_id')
-        return Invoice.objects.filter(client_company_id=client_id)
+        queryset = Invoice.objects.filter(client_company_id=client_id)
+        
+        # Status filter
+        status = self.request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(status__iexact=status)
+            
+        # Amount Range filter
+        min_amount = self.request.query_params.get('min_amount')
+        max_amount = self.request.query_params.get('max_amount')
+        if min_amount:
+            queryset = queryset.filter(total_amount__gte=min_amount)
+        if max_amount:
+            queryset = queryset.filter(total_amount__lte=max_amount)
+            
+        # Date Range filter
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            queryset = queryset.filter(invoice_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(invoice_date__lte=end_date)
+            
+        return queryset.order_by('-invoice_date')
 
     def perform_create(self, serializer):
         client_id = self.kwargs.get('client_id')
@@ -798,8 +1215,58 @@ class InvoiceListCreateAPIView(ListCreateAPIView):
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
-    filter_backends = [filters.SearchFilter]
     search_fields = ['invoice_number', 'client_company__legal_name']
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Statistics breakdown
+        base_qs = queryset
+        stats = {
+            'total': base_qs.count(),
+            'paid': base_qs.filter(status__iexact='PAID').count(),
+            'partial': base_qs.filter(status__iexact='PARTIAL').count(),
+            'unpaid': base_qs.filter(status__iexact='UNPAID').count(),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['statistics'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'results': serializer.data,
+            'statistics': stats
+        })
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # Status filter
+        status = self.request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(status__iexact=status)
+            
+        # Amount Range filter
+        min_amount = self.request.query_params.get('min_amount')
+        max_amount = self.request.query_params.get('max_amount')
+        if min_amount:
+            queryset = queryset.filter(total_amount__gte=min_amount)
+        if max_amount:
+            queryset = queryset.filter(total_amount__lte=max_amount)
+            
+        # Date Range filter
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            queryset = queryset.filter(invoice_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(invoice_date__lte=end_date)
+            
+        return queryset.order_by('-invoice_date')
 
 class InvoiceDetailAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = InvoiceSerializer
@@ -944,7 +1411,36 @@ class NotificationListCreateAPIView(ListCreateAPIView):
     search_fields = ['message', 'user__username']
 
     def get_queryset(self):
-        return Notification.objects.filter(user=self.request.user).order_by('-created_at')
+        user = self.request.user
+        qs = Notification.objects.filter(user=user)
+        
+        # If user is superuser, show all their notifications
+        if user.is_superuser:
+            return qs.order_by('-created_at')
+            
+        # Check for specific granular notification permissions
+        can_view_all = user.has_perm('djangosimplemissionapp.view_notification')
+        can_view_server = user.has_perm('djangosimplemissionapp.view_server_notifications')
+        can_view_domain = user.has_perm('djangosimplemissionapp.view_domain_notifications')
+        can_view_exbot = user.has_perm('djangosimplemissionapp.view_exbot_notifications')
+
+        # If they don't have the global "view_notification" permission, 
+        # we filter by the specific types they ARE allowed to see.
+        if not can_view_all:
+            allowed_types = []
+            if can_view_server: allowed_types.append('server_alert')
+            if can_view_domain: allowed_types.append('domain_alert')
+            if can_view_exbot: allowed_types.append('exbot_alert')
+            
+            # If they have specific permissions, filter by those types
+            if allowed_types:
+                qs = qs.filter(notification_type__in=allowed_types)
+            else:
+                # If they have NONE of the above, they only see notifications 
+                # that don't have these specific alert types (e.g. system messages)
+                qs = qs.exclude(notification_type__in=['server_alert', 'domain_alert', 'exbot_alert'])
+                
+        return qs.order_by('-created_at')
 
 class NotificationDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Notification.objects.all()
@@ -956,6 +1452,12 @@ class UnreadNotificationCountAPIView(APIView):
     def get(self, request):
         count = Notification.objects.filter(user=request.user, is_read=False).count()
         return Response({'unread_count': count})
+
+class MarkAllNotificationsReadAPIView(views.APIView):
+    permission_classes = [IsAuthenticated]
+    def put(self, request):
+        Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+        return Response({'message': 'All notifications marked as read'}, status=status.HTTP_200_OK)
 
 class EmployeeLeaveListCreateAPIView(ListCreateAPIView):
     queryset = EmployeeLeave.objects.all()
@@ -996,6 +1498,45 @@ class CompanyProfileDetailAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = CompanyProfileSerializer
     permission_classes = [IsAuthenticated]
 
+class EmployeeSalarySummaryListAPIView(ListAPIView):
+    queryset = User.objects.filter(salaries__isnull=False).distinct()
+    serializer_class = EmployeeSalarySummarySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['username', 'first_name', 'last_name']
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        # Calculate global statistics for salaries
+        from django.db.models import Sum, Count, Case, When, IntegerField
+        all_salaries = Salary.objects.all()
+        
+        # Apply search filters if needed (but search here is on User, not Salary)
+        # For simplicity, we'll return global stats or stats matching the user list
+        stats = all_salaries.aggregate(
+            total_basic=Sum('basic'),
+            paid_count=Count(Case(When(status='Paid', then=1), output_field=IntegerField())),
+            unpaid_count=Count(Case(When(status='Unpaid', then=1), output_field=IntegerField()))
+        )
+
+        response.data['statistics'] = {
+            'total_basic': float(stats['total_basic'] or 0),
+            'paid_count': stats['paid_count'] or 0,
+            'unpaid_count': stats['unpaid_count'] or 0
+        }
+
+        return response
+
 class SalaryListCreateAPIView(ListCreateAPIView):
     queryset = Salary.objects.all()
     serializer_class = SalarySerializer
@@ -1003,6 +1544,33 @@ class SalaryListCreateAPIView(ListCreateAPIView):
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['employee__user__username', 'status']
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        # Calculate statistics from the filtered queryset
+        from django.db.models import Sum, Count, Case, When, IntegerField
+        stats = queryset.aggregate(
+            total_basic=Sum('basic'),
+            paid_count=Count(Case(When(status='Paid', then=1), output_field=IntegerField())),
+            unpaid_count=Count(Case(When(status='Unpaid', then=1), output_field=IntegerField()))
+        )
+
+        response.data['statistics'] = {
+            'total_basic': float(stats['total_basic'] or 0),
+            'paid_count': stats['paid_count'] or 0,
+            'unpaid_count': stats['unpaid_count'] or 0
+        }
+
+        return response
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -1076,6 +1644,12 @@ class OtherIncomeDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = OtherIncome.objects.all()
     serializer_class = OtherIncomeSerializer
     permission_classes = [IsAuthenticated]
+
+class UserDesignationsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        designations = User.objects.exclude(designation__isnull=True).exclude(designation='').values_list('designation', flat=True).distinct()
+        return Response(sorted(list(designations)))
 
 class OtherExpenseListCreateAPIView(ListCreateAPIView):
     queryset = OtherExpense.objects.all()
@@ -1507,21 +2081,284 @@ class TeamPerformanceAPIView(APIView):
             if not queryset.exists():
                 return Response({'error': 'Team not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # 4. Process stats
-        all_stats = [self._get_team_stats(t) for t in queryset]
-        
+        # 4. Slice queryset for pagination BEFORE building stats (performance)
+        try:
+            page = int(request.query_params.get('page', 1))
+            page_size = int(request.query_params.get('page_size', 10))
+        except (ValueError, TypeError):
+            page = 1
+            page_size = 10
+
+        page_size = max(1, min(page_size, 100))  # clamp between 1–100
+
+        total_count = queryset.count()
+        total_pages = (total_count + page_size - 1) // page_size
+
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged_queryset = queryset[start:end]
+
+        # 5. Process stats only for this page
+        all_stats = [self._get_team_stats(t) for t in paged_queryset]
+
         total_pending = sum(s.pop('_pending', 0) for s in all_stats)
         total_completed = sum(s.pop('_completed', 0) for s in all_stats)
         total_inprogress = sum(s.pop('_progressing', 0) for s in all_stats)
 
-        # 5. Handle empty cases for better UX
+        # 6. Handle empty cases for better UX
         if not all_stats and not can_view_all:
             return Response({'error': 'No team found for your account.'}, status=status.HTTP_404_NOT_FOUND)
 
+        # Build next/previous URLs
+        base_url = request.build_absolute_uri(request.path)
+
+        def build_url(p):
+            return f"{base_url}?page={p}&page_size={page_size}"
+
         return Response({
-            'total_teams': len(all_stats),
+            'count': total_count,
+            'total_pages': total_pages,
+            'current_page': page,
+            'page_size': page_size,
+            'next': build_url(page + 1) if page < total_pages else None,
+            'previous': build_url(page - 1) if page > 1 else None,
+            'total_teams': total_count,
             'total_pending': total_pending,
             'total_completed': total_completed,
             'total_inprogress': total_inprogress,
             'teams': all_stats,
         }, status=status.HTTP_200_OK)
+
+class LeadViewSet(viewsets.ModelViewSet):
+    queryset = Lead.objects.all().order_by('-created_at')
+    serializer_class = LeadSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['company_name', 'contact_person', 'contact_number', 'location', 'lead_source']
+    ordering_fields = ['created_at', 'next_followup_date', 'interest_level', 'conversion_status']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        
+        can_view_all = user.has_perm('djangosimplemissionapp.view_all_leads')
+        can_view_own = user.has_perm('djangosimplemissionapp.view_own_leads') or can_view_all
+        
+        if not can_view_all:
+            if can_view_own:
+                qs = qs.filter(assigned_to=user)
+            else:
+                # If they have neither, they see nothing
+                qs = qs.none()
+        
+        today = timezone.now().date()
+        
+        # Subqueries for specific follow-up dates
+        pending_followups = FollowUp.objects.filter(lead=OuterRef('pk'), status='pending')
+        
+        # Annotate queryset with nearest upcoming and latest overdue dates
+        qs = qs.annotate(
+            nearest_upcoming_date=Subquery(pending_followups.filter(followup_date__gte=today).order_by('followup_date').values('followup_date')[:1]),
+            latest_overdue_date=Subquery(pending_followups.filter(followup_date__lt=today).order_by('-followup_date').values('followup_date')[:1]),
+            current_status=Subquery(FollowUp.objects.filter(lead=OuterRef('pk')).order_by('-created_at').values('conversion_status')[:1]),
+            current_interest=Subquery(FollowUp.objects.filter(lead=OuterRef('pk')).order_by('-created_at').values('interest_level')[:1])
+        )
+        
+        # Additional filtering
+        interest = self.request.query_params.get('interest_level')
+        if interest:
+            if interest == 'warm':
+                qs = qs.filter(Q(current_interest=interest) | Q(current_interest__isnull=True))
+            else:
+                qs = qs.filter(current_interest=interest)
+        
+        lead_conversion_status = self.request.query_params.get('conversion_status')
+        if lead_conversion_status:
+            if lead_conversion_status == 'new':
+                qs = qs.filter(Q(current_status=lead_conversion_status) | Q(current_status__isnull=True))
+            else:
+                qs = qs.filter(current_status=lead_conversion_status)
+
+        assigned_to = self.request.query_params.get('assigned_to')
+        if assigned_to:
+            qs = qs.filter(assigned_to_id=assigned_to)
+
+        # Date-based filtering uses the most relevant date (upcoming if exists, else overdue)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(Q(nearest_upcoming_date__gte=start_date) | Q(latest_overdue_date__gte=start_date))
+        if end_date:
+            qs = qs.filter(Q(nearest_upcoming_date__lte=end_date) | Q(latest_overdue_date__lte=end_date))
+        
+        # Upcoming filter — leads with at least one pending upcoming follow-up
+        upcoming = self.request.query_params.get('upcoming')
+        if upcoming in ('true', '1', 'yes'):
+            qs = qs.filter(nearest_upcoming_date__isnull=False)
+
+        # Overdue filter — leads with no upcoming follow-ups but at least one overdue follow-up
+        overdue = self.request.query_params.get('overdue')
+        if overdue in ('true', '1', 'yes'):
+            qs = qs.filter(nearest_upcoming_date__isnull=True, latest_overdue_date__isnull=False).exclude(current_status__in=['closed', 'denied'])
+
+        return qs
+
+class FollowUpViewSet(viewsets.ModelViewSet):
+    queryset = FollowUp.objects.all().order_by('-created_at')
+
+    serializer_class = FollowUpSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        # When a new interaction is logged, mark all previous pending follow-ups as completed
+        lead = serializer.validated_data.get('lead')
+        if lead:
+            FollowUp.objects.filter(lead=lead, status='pending').update(status='completed')
+        serializer.save()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        
+        # Filter by lead
+        lead_id = self.request.query_params.get('lead')
+        if lead_id:
+            qs = qs.filter(lead_id=lead_id)
+            
+        # Filter by specific date
+        date = self.request.query_params.get('date')
+        if date:
+            qs = qs.filter(followup_date=date)
+
+        # Upcoming filter — follow-ups where followup_date >= today
+        upcoming = self.request.query_params.get('upcoming')
+        if upcoming in ('true', '1', 'yes'):
+            from django.utils import timezone
+            today = timezone.now().date()
+            qs = qs.filter(followup_date__gte=today)
+
+        # Filter by assignment (users only see followups for leads assigned to them)
+        user = self.request.user
+        if not user.is_superuser:
+            qs = qs.filter(lead__assigned_to=user)
+
+        return qs.select_related('lead')
+
+class LeadDashboardStatsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        can_view_all = user.has_perm('djangosimplemissionapp.view_all_leads')
+        can_view_own = user.has_perm('djangosimplemissionapp.view_own_leads') or can_view_all
+
+        base_qs = Lead.objects.all()
+        if not can_view_all:
+            if can_view_own:
+                base_qs = base_qs.filter(assigned_to=user)
+            else:
+                base_qs = base_qs.none()
+
+        from django.db.models import Count, Subquery, OuterRef
+        from django.utils import timezone
+        today = timezone.now().date()
+        pending_followups = FollowUp.objects.filter(lead=OuterRef('pk'), status='pending')
+        
+        # Annotate queryset with nearest upcoming and latest overdue dates
+        base_qs = base_qs.annotate(
+            nearest_upcoming_date=Subquery(pending_followups.filter(followup_date__gte=today).order_by('followup_date').values('followup_date')[:1]),
+            latest_overdue_date=Subquery(pending_followups.filter(followup_date__lt=today).order_by('-followup_date').values('followup_date')[:1]),
+            current_status=Subquery(FollowUp.objects.filter(lead=OuterRef('pk')).order_by('-created_at').values('conversion_status')[:1]),
+            current_interest=Subquery(FollowUp.objects.filter(lead=OuterRef('pk')).order_by('-created_at').values('interest_level')[:1])
+        )
+
+        # Count by Interest Level
+        interest_stats = base_qs.values('current_interest').annotate(count=Count('id'))
+        
+        # Count by Conversion Status
+        status_stats = base_qs.values('current_status').annotate(count=Count('id'))
+        
+        # Follow-up stats using the new logic
+        upcoming_followups = base_qs.filter(nearest_upcoming_date__isnull=False).count()
+        overdue_followups = base_qs.filter(nearest_upcoming_date__isnull=True, latest_overdue_date__isnull=False).exclude(current_status__in=['closed', 'denied']).count()
+
+        # Format output, defaulting empty statuses to 'warm' and 'new' to match LeadSerializer logic
+        formatted_interest = {}
+        for item in interest_stats:
+            key = item['current_interest'] or 'warm'
+            formatted_interest[key] = formatted_interest.get(key, 0) + item['count']
+            
+        formatted_status = {}
+        for item in status_stats:
+            key = item['current_status'] or 'new'
+            formatted_status[key] = formatted_status.get(key, 0) + item['count']
+
+        return Response({
+            'interest_stats': formatted_interest,
+            'status_stats': formatted_status,
+            'upcoming_followups': upcoming_followups,
+            'overdue_followups': overdue_followups,
+            'total_leads': base_qs.count()
+        })
+
+class ScheduleListCreateAPIView(ListCreateAPIView):
+    serializer_class = ScheduleSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['title', 'description', 'assigned_to__username']
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = Schedule.objects.all()
+        
+        # Check if user has management roles (SuperAdmin, Admin, HR)
+        user_roles = user.role_names
+        is_management = any(role in ['SuperAdmin', 'Admin', 'HR'] for role in user_roles)
+
+        # Filter by assignment, creator, or role unless management or superuser
+        if not user.is_superuser and not is_management:
+            from django.db.models import Q
+            # User sees schedules assigned to them, created by them, or assigned to their current role
+            queryset = queryset.filter(
+                Q(assigned_to=user) | 
+                Q(created_by=user) | 
+                Q(assigned_role=user.role)
+            )
+
+            
+        # Filter by completion status (default to hide completed)
+        show_completed = self.request.query_params.get('show_completed', 'false').lower() == 'true'
+        if not show_completed:
+            queryset = queryset.filter(is_completed=False)
+            
+        # Filter by date
+        date_param = self.request.query_params.get('date', None)
+        if date_param:
+            queryset = queryset.filter(schedule_date=date_param)
+
+        # Filter by user
+        user_param = self.request.query_params.get('assigned_to', None)
+        if user_param:
+            queryset = queryset.filter(assigned_to_id=user_param)
+
+        # Filter by role
+        role_param = self.request.query_params.get('assigned_role', None)
+        if role_param:
+            queryset = queryset.filter(assigned_role_id=role_param)
+
+
+            
+        return queryset.order_by('-created_at')
+
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+class ScheduleDetailAPIView(RetrieveUpdateDestroyAPIView):
+    queryset = Schedule.objects.all()
+    serializer_class = ScheduleSerializer
+    permission_classes = [IsAuthenticated]
+
+
+

@@ -69,6 +69,7 @@ class User(AbstractUser):
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='users')
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
+    token_version = models.IntegerField(default=1)
     objects = UserManager()
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['email']  # Keep empty if username is login field
@@ -77,6 +78,8 @@ class User(AbstractUser):
         permissions = [
             ("view_all_employee_performance", "Can view all employee performance"),
             ("view_own_employee_performance", "Can view own employee performance"),
+            ("view_all_leads", "Can view all leads"),
+            ("view_own_leads", "Can view own leads"),
         ]
 
     def __str__(self):
@@ -140,9 +143,16 @@ class User(AbstractUser):
         return self.is_superuser or self.has_role('Developer')
 
     def sync_permissions(self):
-        is_super = self.has_role('SuperAdmin')
-        is_staff = self.has_any_role(['SuperAdmin', 'Admin', 'Billing'])
-        
+        is_super = False
+        is_staff = False
+        if self.role:
+            role_name = self.role.name.upper()
+            if role_name == 'SUPERADMIN':
+                is_super = True
+                is_staff = True
+            elif role_name in ['ADMIN', 'BILLING']:
+                is_staff = True
+                
         # Use update() to bypass signals and avoid infinite recursion
         User.objects.filter(id=self.id).update(
             is_superuser=is_super,
@@ -243,6 +253,10 @@ class ProjectDomain(models.Model):
         ('Pending', 'Pending'),
         ('Expired', 'Expired'),
     )
+    INVOICE_STATUS_CHOICES = (
+        ('NOT_INVOICED', 'Not Invoiced'),
+        ('INVOICED', 'Invoiced'),
+    )
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_domains', null=True, blank=True)
     client_address = models.ForeignKey("ProjectBusinessAddress", on_delete=models.SET_NULL, null=True, blank=True, related_name='domains')
     name = models.CharField(max_length=200, blank=True, null=True)
@@ -252,6 +266,7 @@ class ProjectDomain(models.Model):
     purchase_date = models.DateField(null=True, blank=True)
     expiration_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending', blank=True, null=True)
+    invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     payment_status = models.CharField(
         max_length=20,
@@ -292,6 +307,10 @@ class ProjectServer(models.Model):
         ('Pending', 'Pending'),
         ('Expired', 'Expired'),
     )
+    INVOICE_STATUS_CHOICES = (
+        ('NOT_INVOICED', 'Not Invoiced'),
+        ('INVOICED', 'Invoiced'),
+    )
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_servers', null=True, blank=True)
     client_address = models.ForeignKey("ProjectBusinessAddress", on_delete=models.SET_NULL, null=True, blank=True, related_name='servers')
     server_type = models.CharField(max_length=100, blank=True, null=True, help_text="e.g., VPS, Shared, Dedicated")
@@ -302,6 +321,7 @@ class ProjectServer(models.Model):
     purchase_date = models.DateField(null=True, blank=True)
     expiration_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending', blank=True, null=True)
+    invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     payment_status = models.CharField(
         max_length=20,
@@ -341,6 +361,10 @@ class ProjectExbot(models.Model):
         ('PAID', 'Paid'),
         ('UNPAID', 'Unpaid'),
     )
+    INVOICE_STATUS_CHOICES = (
+        ('NOT_INVOICED', 'Not Invoiced'),
+        ('INVOICED', 'Invoiced'),
+    )
     project = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_exbots', null=True, blank=True)
     whatsapp_number = models.CharField(max_length=20, blank=True, null=True)
     plan_category = models.CharField(max_length=100, blank=True, null=True)
@@ -349,6 +373,7 @@ class ProjectExbot(models.Model):
     plan_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='UNPAID')
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
+    invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
     description = models.TextField(blank=True, null=True)
 
     def save(self, *args, **kwargs):
@@ -368,14 +393,24 @@ class ProjectExbot(models.Model):
     def __str__(self):
         return f"{self.whatsapp_number} - {self.plan_category}"
 
+    class Meta:
+        permissions = [
+            ("view_exbot_stats", "Can view exbot analytics and stats"),
+        ]
+
 
 class ProjectFinance(models.Model):
+    INVOICE_STATUS_CHOICES = (
+        ('NOT_INVOICED', 'Not Invoiced'),
+        ('INVOICED', 'Invoiced'),
+    )
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_finances', null=True, blank=True)
     project_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Fixed Project Cost (Budget)")
     manpower_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Total Manpower Cost")
     total_invoiced = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     total_paid = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     total_balance_due = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
 
     def __str__(self):
         return f"Finance Record {self.id}"
@@ -411,7 +446,12 @@ class ProjectTeam(models.Model):
     end_date = models.DateField(null=True, blank=True)
     deadline = models.DateField(null=True, blank=True)
     actual_end_date = models.DateField(null=True, blank=True)
+    INVOICE_STATUS_CHOICES = (
+        ('NOT_INVOICED', 'Not Invoiced'),
+        ('INVOICED', 'Invoiced'),
+    )
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
+    invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
     payment_status = models.CharField(
         max_length=20,
         choices=[('PAID', 'Paid'), ('UNPAID', 'Unpaid')],
@@ -544,11 +584,16 @@ class ProjectService(models.Model):
 
     actual_end_date = models.DateField(null=True, blank=True)
 
+    INVOICE_STATUS_CHOICES = (
+        ('NOT_INVOICED', 'Not Invoiced'),
+        ('INVOICED', 'Invoiced'),
+    )
     status = models.CharField(
         max_length=50,
         choices=STATUS_CHOICES,
         default="Pending"
     )
+    invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
     payment_status = models.CharField(
         max_length=20,
         choices=[('PAID', 'Paid'), ('UNPAID', 'Unpaid')],
@@ -846,6 +891,15 @@ class InvoiceItem(models.Model):
         related_name="invoice_items"
     )
 
+    # LINK FINANCE
+    project_finance = models.ForeignKey(
+        "ProjectFinance",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoice_items"
+    )
+
     service_type = models.CharField(max_length=100,blank=True,null=True)
 
     description = models.TextField(blank=True,null=True)
@@ -862,6 +916,30 @@ class InvoiceItem(models.Model):
     def save(self, *args, **kwargs):
         self.total_price = (self.rate or Decimal("0.00")) * (self.quantity or 0)
         super().save(*args, **kwargs)
+        
+        # Automate Invoice Status
+        if self.project_domain:
+            self.project_domain.invoice_status = 'INVOICED'
+            self.project_domain.save(update_fields=['invoice_status'])
+        if self.project_server:
+            self.project_server.invoice_status = 'INVOICED'
+            self.project_server.save(update_fields=['invoice_status'])
+        if self.project_exbot:
+            self.project_exbot.invoice_status = 'INVOICED'
+            self.project_exbot.save(update_fields=['invoice_status'])
+
+        if self.project_service:
+            self.project_service.invoice_status = 'INVOICED'
+            self.project_service.save(update_fields=['invoice_status'])
+
+        if self.project_team:
+            self.project_team.invoice_status = 'INVOICED'
+            self.project_team.save(update_fields=['invoice_status'])
+
+        if self.project_finance:
+            self.project_finance.invoice_status = 'INVOICED'
+            self.project_finance.save(update_fields=['invoice_status'])
+
         if self.invoice:
             self.invoice.update_totals()
 
@@ -955,6 +1033,73 @@ def handle_invoice_delete(sender, instance, **kwargs):
     """Recalibration not needed for other records upon invoice deletion."""
     pass
 
+@receiver(post_delete, sender=InvoiceItem)
+def handle_invoice_item_delete(sender, instance, **kwargs):
+    """
+    When an InvoiceItem is deleted (e.g. when its Invoice is deleted),
+    check if the linked asset has any other active invoice items.
+    If not, reset invoice_status back to NOT_INVOICED.
+    """
+    # Reset project_domain
+    if instance.project_domain_id:
+        has_other = InvoiceItem.objects.filter(
+            project_domain_id=instance.project_domain_id
+        ).exists()
+        if not has_other:
+            ProjectDomain.objects.filter(pk=instance.project_domain_id).update(
+                invoice_status='NOT_INVOICED'
+            )
+
+    # Reset project_server
+    if instance.project_server_id:
+        has_other = InvoiceItem.objects.filter(
+            project_server_id=instance.project_server_id
+        ).exists()
+        if not has_other:
+            ProjectServer.objects.filter(pk=instance.project_server_id).update(
+                invoice_status='NOT_INVOICED'
+            )
+
+    # Reset project_exbot
+    if instance.project_exbot_id:
+        has_other = InvoiceItem.objects.filter(
+            project_exbot_id=instance.project_exbot_id
+        ).exists()
+        if not has_other:
+            ProjectExbot.objects.filter(pk=instance.project_exbot_id).update(
+                invoice_status='NOT_INVOICED'
+            )
+
+    # Reset project_service
+    if instance.project_service_id:
+        has_other = InvoiceItem.objects.filter(
+            project_service_id=instance.project_service_id
+        ).exists()
+        if not has_other:
+            ProjectService.objects.filter(pk=instance.project_service_id).update(
+                invoice_status='NOT_INVOICED'
+            )
+
+    # Reset project_team
+    if instance.project_team_id:
+        has_other = InvoiceItem.objects.filter(
+            project_team_id=instance.project_team_id
+        ).exists()
+        if not has_other:
+            ProjectTeam.objects.filter(pk=instance.project_team_id).update(
+                invoice_status='NOT_INVOICED'
+            )
+
+    # Reset project_finance
+    if instance.project_finance_id:
+        has_other = InvoiceItem.objects.filter(
+            project_finance_id=instance.project_finance_id
+        ).exists()
+        if not has_other:
+            ProjectFinance.objects.filter(pk=instance.project_finance_id).update(
+                invoice_status='NOT_INVOICED'
+            )
+
 class ActivityExceedComment(models.Model):
     activity = models.ForeignKey(EmployeeDailyActivity,on_delete=models.CASCADE,related_name='exceed_comments',null=True,blank=True)
     project_service = models.ForeignKey('ProjectService',on_delete=models.CASCADE,related_name='exceed_comments',null=True,blank=True)
@@ -977,6 +1122,11 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        permissions = [
+            ("view_server_notifications", "Can view server related notifications"),
+            ("view_domain_notifications", "Can view domain related notifications"),
+            ("view_exbot_notifications", "Can view exbot related notifications"),
+        ]
 
     def __str__(self):
         return f"Notification for {self.user.username}: {self.message[:50]}"
@@ -1103,7 +1253,7 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.employee_id}"   
-
+   
 class UserSalary(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='user_salary')
     base_salary = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
@@ -1363,3 +1513,146 @@ def delete_attendance_update_salary(sender, instance, **kwargs):
         calculate_salary(salary)
     except Salary.DoesNotExist:
         pass
+
+
+@receiver(post_delete, sender=InvoiceItem)
+def reset_invoice_status_on_delete(sender, instance, **kwargs):
+    if instance.project_domain:
+        if not InvoiceItem.objects.filter(project_domain=instance.project_domain).exists():
+            instance.project_domain.invoice_status = 'NOT_INVOICED'
+            instance.project_domain.save(update_fields=['invoice_status'])
+    
+    if instance.project_server:
+        if not InvoiceItem.objects.filter(project_server=instance.project_server).exists():
+            instance.project_server.invoice_status = 'NOT_INVOICED'
+            instance.project_server.save(update_fields=['invoice_status'])
+
+    if instance.project_exbot:
+        if not InvoiceItem.objects.filter(project_exbot=instance.project_exbot).exists():
+            instance.project_exbot.invoice_status = 'NOT_INVOICED'
+            instance.project_exbot.save(update_fields=['invoice_status'])
+
+    if instance.project_service:
+        if not InvoiceItem.objects.filter(project_service=instance.project_service).exists():
+            instance.project_service.invoice_status = 'NOT_INVOICED'
+            instance.project_service.save(update_fields=['invoice_status'])
+
+    if instance.project_team:
+        if not InvoiceItem.objects.filter(project_team=instance.project_team).exists():
+            instance.project_team.invoice_status = 'NOT_INVOICED'
+            instance.project_team.save(update_fields=['invoice_status'])
+
+    if instance.project_finance:
+        if not InvoiceItem.objects.filter(project_finance=instance.project_finance).exists():
+            instance.project_finance.invoice_status = 'NOT_INVOICED'
+            instance.project_finance.save(update_fields=['invoice_status'])
+
+
+@receiver(models.signals.pre_save, sender=User)
+def increment_token_version_on_role_change(sender, instance, **kwargs):
+    if instance.id:
+        try:
+            old_instance = sender.objects.get(id=instance.id)
+            if old_instance.role != instance.role:
+                instance.token_version += 1
+        except sender.DoesNotExist:
+            pass
+
+class Lead(models.Model):
+    INTEREST_LEVEL = [
+        ('hot', 'Hot'),
+        ('warm', 'Warm'),
+        ('cold', 'Cold'),
+    ]
+
+    CONVERSION_STATUS = [
+        ('new', 'New'),
+        ('contacted', 'Contacted'),
+        ('proposal_sent', 'Proposal Sent'),
+        ('negotiation', 'Negotiation'),
+        ('approved', 'Approved'),
+        ('closed', 'Closed'),
+        ('denied', 'Denied'),
+    ]
+
+
+    FOLLOWUP_STATUS = [
+        ('yes', 'Yes'),
+        ('no', 'No'),
+    ]
+
+    company_name = models.CharField(max_length=255)
+    nature_of_business = models.CharField(max_length=255, blank=True, null=True)
+    location = models.CharField(max_length=255, blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    website = models.CharField(max_length=255, blank=True, null=True)
+
+    contact_number = models.CharField(max_length=15)
+    contact_person = models.CharField(max_length=255)
+
+    contacted_date = models.DateField(null=True, blank=True)
+    service_required = models.TextField(blank=True, null=True)
+    description = models.TextField(blank=True) # Keeping description as Strategic Notes for company details
+    lead_source = models.CharField(max_length=100, blank=True)
+    assigned_to = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_leads')
+    assigned_role = models.ForeignKey('Role', on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_leads_role')
+    attachment = models.FileField(upload_to='lead_files/', null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.company_name
+
+class FollowUp(models.Model):
+    INTERACTION_TYPES = [
+        ('call', 'Phone Call'),
+        ('meeting', 'Direct Meeting'),
+        ('whatsapp', 'WhatsApp'),
+        ('email', 'Email'),
+        ('other', 'Other'),
+    ]
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('missed', 'Missed'),
+        ('rescheduled', 'Rescheduled'),
+    ]
+
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='followups')
+    interaction_date = models.DateField(default=timezone.now)
+    note = models.TextField()
+    followup_date = models.DateField(null=True, blank=True)
+    interest_level = models.CharField(max_length=10, blank=True, null=True)
+    conversion_status = models.CharField(max_length=20, blank=True, null=True)
+    interaction_type = models.CharField(max_length=20, choices=INTERACTION_TYPES, default='call')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    is_project_created = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    
+    class Meta:
+        ordering = ['-created_at']
+
+
+    def __str__(self):
+        return f"Follow-up for {self.lead.company_name} on {self.followup_date}"
+
+# Removed post_save signal because we will handle initial FollowUp creation in the Serializer.
+
+class Schedule(models.Model):
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    schedule_date = models.DateField()
+    schedule_time = models.TimeField()
+    assigned_to = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_schedules')
+    assigned_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='role_schedules')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_schedules')
+
+    is_completed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.title} - {self.schedule_date} {self.schedule_time}"

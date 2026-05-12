@@ -1,0 +1,11 @@
+android studyo
+app build grade
+main.dart
+assets
+pubspec.yaml
+sphash screen => onboarding dashboard ,
+main page navigation page  => student  googlein localsin => data => dashboard 
+main page navigation page  => employer  googlein localsin => data => dashboard
+
+
+spash page =>   check token plus use type  => dashboard

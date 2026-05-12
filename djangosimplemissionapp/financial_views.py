@@ -360,6 +360,9 @@ class ProjectAnalyticalAPIView(APIView):
             create_notification_if_new(superadmins, message, project=exbot.project, notification_type='exbot_alert')
 
     def get(self, request):
+        if not request.user.has_perm('djangosimplemissionapp.view_projectstats'):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            
         # Auto-trigger expiry check every time this API is called
         self._run_expiry_check()
 
@@ -780,6 +783,9 @@ class ServerAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not request.user.has_perm('djangosimplemissionapp.view_server_stats'):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            
         from .models import ProjectServer
         from django.db.models import Count, Sum
         from django.utils import timezone
@@ -880,6 +886,9 @@ class DomainAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not request.user.has_perm('djangosimplemissionapp.view_domain_stats'):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            
         from .models import ProjectDomain
         from django.db.models import Count, Sum
         from django.utils import timezone
@@ -974,6 +983,9 @@ class ExbotAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not request.user.has_perm('djangosimplemissionapp.view_exbot_stats'):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        
         from .models import ProjectExbot
         from django.db.models import Count, Sum
         from django.utils import timezone

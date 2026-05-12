@@ -8,7 +8,7 @@ from .models import (
     ProjectService, EmployeeDailyActivity, ActivityLog, Invoice,
     InvoiceItem, Payment, ActivityExceedComment, Notification,
     EmployeeLeave, Company, CompanyProfile, Salary, Attendance,
-    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot
+    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot, Lead, FollowUp
 )
 
 # Custom UserAdmin to handle the custom User model
@@ -69,3 +69,14 @@ admin.site.register(Employee)
 admin.site.register(OtherIncome)
 admin.site.register(OtherExpense)
 admin.site.register(UserSalary)
+
+@admin.register(Lead)
+class LeadAdmin(admin.ModelAdmin):
+    list_display = ('company_name', 'contact_person', 'lead_source', 'created_at')
+    list_filter = ('lead_source',)
+    search_fields = ('company_name', 'contact_person', 'contact_number')
+
+@admin.register(FollowUp)
+class FollowUpAdmin(admin.ModelAdmin):
+    list_display = ('lead', 'followup_date', 'interest_level', 'conversion_status', 'created_at')
+    list_filter = ('followup_date', 'interest_level', 'conversion_status')

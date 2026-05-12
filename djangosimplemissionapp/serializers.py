@@ -10,7 +10,7 @@ from .models import (
     ProjectServiceTeam,ProjectServiceMember,ProjectDocument,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,
-    ClientAdvance,ProjectExbot
+    ClientAdvance,ProjectExbot,Lead,FollowUp,Schedule
 )
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -55,6 +55,7 @@ class UserSerializer(serializers.ModelSerializer):
             'profile_pic',
             'role',
             'role_id',
+            'date_joined',
         ]
         extra_kwargs = {
             'password': {'write_only': True}
@@ -103,22 +104,66 @@ class ClientSummarySerializer(serializers.ModelSerializer):
     total_paid = serializers.SerializerMethodField()
     total_balance_due = serializers.SerializerMethodField()
     invoice_count = serializers.SerializerMethodField()
+    total_advance = serializers.SerializerMethodField()
+    remaining_advance = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectBusinessAddress
-        fields = ['id', 'legal_name', 'total_invoiced', 'total_paid', 'total_balance_due', 'invoice_count']
+        fields = ['id', 'legal_name', 'total_invoiced', 'total_paid', 'total_balance_due', 'invoice_count', 'total_advance', 'remaining_advance']
 
     def get_total_invoiced(self, obj):
-        return obj.invoices.aggregate(total=models.Sum('total_amount'))['total'] or 0
+        invoices = obj.invoices.all()
+        request = self.context.get('request')
+        if request:
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            if start_date:
+                invoices = invoices.filter(created_at__date__gte=start_date)
+            if end_date:
+                invoices = invoices.filter(created_at__date__lte=end_date)
+        return invoices.aggregate(total=models.Sum('total_amount'))['total'] or 0
 
     def get_total_paid(self, obj):
-        return obj.invoices.aggregate(total=models.Sum('total_paid'))['total'] or 0
+        invoices = obj.invoices.all()
+        request = self.context.get('request')
+        if request:
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            if start_date:
+                invoices = invoices.filter(created_at__date__gte=start_date)
+            if end_date:
+                invoices = invoices.filter(created_at__date__lte=end_date)
+        return invoices.aggregate(total=models.Sum('total_paid'))['total'] or 0
 
     def get_total_balance_due(self, obj):
-        return obj.invoices.aggregate(total=models.Sum('balance_due'))['total'] or 0
+        invoices = obj.invoices.all()
+        request = self.context.get('request')
+        if request:
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            if start_date:
+                invoices = invoices.filter(created_at__date__gte=start_date)
+            if end_date:
+                invoices = invoices.filter(created_at__date__lte=end_date)
+        return invoices.aggregate(total=models.Sum('balance_due'))['total'] or 0
 
     def get_invoice_count(self, obj):
-        return obj.invoices.count()
+        invoices = obj.invoices.all()
+        request = self.context.get('request')
+        if request:
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            if start_date:
+                invoices = invoices.filter(created_at__date__gte=start_date)
+            if end_date:
+                invoices = invoices.filter(created_at__date__lte=end_date)
+        return invoices.count()
+
+    def get_total_advance(self, obj):
+        return obj.advances.aggregate(total=models.Sum('amount'))['total'] or 0
+
+    def get_remaining_advance(self, obj):
+        return obj.advances.aggregate(total=models.Sum('remaining_amount'))['total'] or 0
 
     def update(self, instance, validated_data):
         # If user manually edits remaining_amount, calculate initial_usage
@@ -139,6 +184,105 @@ class ClientSummarySerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         
         instance.save()
+        return instance
+
+class FollowUpSerializer(serializers.ModelSerializer):
+    lead_name = serializers.ReadOnlyField(source='lead.company_name')
+    class Meta:
+        model = FollowUp
+        fields = ['id', 'lead', 'lead_name', 'note', 'followup_date', 'interaction_date', 'interest_level', 'conversion_status', 'interaction_type', 'status', 'is_project_created', 'created_at']
+
+
+class LeadSerializer(serializers.ModelSerializer):
+    followups = FollowUpSerializer(many=True, read_only=True)
+    assigned_to_name = serializers.ReadOnlyField(source='assigned_to.username')
+    assigned_role_name = serializers.ReadOnlyField(source='assigned_role.name')
+    
+    interest_level = serializers.SerializerMethodField()
+    conversion_status = serializers.SerializerMethodField()
+    next_followup_date = serializers.SerializerMethodField()
+
+    write_interest_level = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    write_conversion_status = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    write_remark = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    write_followup_date = serializers.DateField(write_only=True, required=False, allow_null=True)
+    write_interaction_type = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+
+    class Meta:
+        model = Lead
+        fields = '__all__'
+
+    def get_interest_level(self, obj):
+        latest = obj.followups.order_by('-created_at').first()
+        return latest.interest_level if latest and latest.interest_level else 'warm'
+
+    def get_conversion_status(self, obj):
+        latest = obj.followups.order_by('-created_at').first()
+        return latest.conversion_status if latest and latest.conversion_status else 'new'
+
+    def get_next_followup_date(self, obj):
+        today = timezone.now().date()
+        # Try to find the nearest upcoming follow-up
+        upcoming = obj.followups.filter(followup_date__gte=today, status='pending').order_by('followup_date').first()
+        if upcoming:
+            return upcoming.followup_date
+        
+        # Fallback to the most recent overdue follow-up if no upcoming exists
+        overdue = obj.followups.filter(followup_date__lt=today, status='pending').order_by('-followup_date').first()
+        return overdue.followup_date if overdue else None
+
+    def create(self, validated_data):
+        # We pop these fields but no longer create an automatic FollowUp record 
+        # to ensure the timeline starts clean as requested.
+        validated_data.pop('write_interest_level', 'warm')
+        validated_data.pop('write_conversion_status', 'new')
+        validated_data.pop('write_remark', '')
+        validated_data.pop('write_followup_date', None)
+        validated_data.pop('write_interaction_type', 'call')
+
+        return Lead.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        interest_level = validated_data.pop('write_interest_level', None)
+        conversion_status = validated_data.pop('write_conversion_status', None)
+        remark = validated_data.pop('write_remark', None)
+        followup_date = validated_data.pop('write_followup_date', None)
+        interaction_type = validated_data.pop('write_interaction_type', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if interest_level or conversion_status or remark or interaction_type:
+            latest = instance.followups.order_by('-created_at').first()
+            
+            # Check if any of the fields actually differ from the latest FollowUp or if a remark is provided
+            changed = False
+            if remark:
+                changed = True
+            elif latest:
+                if interest_level and interest_level != latest.interest_level:
+                    changed = True
+                if conversion_status and conversion_status != latest.conversion_status:
+                    changed = True
+                if followup_date and followup_date != latest.followup_date:
+                    changed = True
+                if interaction_type and interaction_type != latest.interaction_type:
+                    changed = True
+            else:
+                changed = True # No latest followup exists
+
+            if changed:
+                # Mark previous pending follow-ups as completed before creating a new one
+                instance.followups.filter(status='pending').update(status='completed')
+                FollowUp.objects.create(
+                    lead=instance,
+                    note=remark or "Lead details updated.",
+                    followup_date=followup_date or (latest.followup_date if latest else None),
+                    interest_level=interest_level or (latest.interest_level if latest else 'warm'),
+                    conversion_status=conversion_status or (latest.conversion_status if latest else 'new'),
+                    interaction_type=interaction_type or (latest.interaction_type if latest else 'call')
+                )
         return instance
 
 class DomainOrServerThirdPartyServiceProviderSerializer(serializers.ModelSerializer):
@@ -400,7 +544,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "id", "invoice_number", "invoice_date", "tax_rate", "discount_amount",
             "subtotal", "tax_amount", "total_amount", "total_paid", "balance_due",
             "status", "due_date", "client_company",
-            "company_profile", "items", "payments"
+            "company_profile", "items", "payments", "created_at"
         ]
 
     def get_company_profile(self, obj):
@@ -434,7 +578,27 @@ class InvoiceSerializer(serializers.ModelSerializer):
         for item in items_data:
             item.pop('id', None)
             item.pop('invoice', None)
-            InvoiceItem.objects.create(invoice=invoice, **item)
+            invoice_item = InvoiceItem.objects.create(invoice=invoice, **item)
+
+            # ── Mark linked asset as INVOICED ──
+            if invoice_item.project_domain_id:
+                from .models import ProjectDomain
+                ProjectDomain.objects.filter(pk=invoice_item.project_domain_id).update(invoice_status='INVOICED')
+            if invoice_item.project_server_id:
+                from .models import ProjectServer
+                ProjectServer.objects.filter(pk=invoice_item.project_server_id).update(invoice_status='INVOICED')
+            if invoice_item.project_exbot_id:
+                from .models import ProjectExbot
+                ProjectExbot.objects.filter(pk=invoice_item.project_exbot_id).update(invoice_status='INVOICED')
+            if invoice_item.project_service_id:
+                from .models import ProjectService
+                ProjectService.objects.filter(pk=invoice_item.project_service_id).update(invoice_status='INVOICED')
+            if invoice_item.project_team_id:
+                from .models import ProjectTeam
+                ProjectTeam.objects.filter(pk=invoice_item.project_team_id).update(invoice_status='INVOICED')
+            if invoice_item.project_finance_id:
+                from .models import ProjectFinance
+                ProjectFinance.objects.filter(pk=invoice_item.project_finance_id).update(invoice_status='INVOICED')
 
         for payment in payments_data:
             payment.pop('id', None)
@@ -525,6 +689,31 @@ class CompanyProfileSerializer(serializers.ModelSerializer):
         model = CompanyProfile
         fields = '__all__'
 
+class EmployeeSalarySummarySerializer(serializers.ModelSerializer):
+    total_paid_amount = serializers.SerializerMethodField()
+    total_unpaid_amount = serializers.SerializerMethodField()
+    record_count = serializers.SerializerMethodField()
+    last_payment_date = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'first_name', 'last_name', 'total_paid_amount', 'total_unpaid_amount', 'record_count', 'last_payment_date']
+
+    def get_total_paid_amount(self, obj):
+        from .models import Salary
+        return obj.salaries.filter(status='Paid').aggregate(total=models.Sum('total_salary'))['total'] or 0
+
+    def get_total_unpaid_amount(self, obj):
+        from .models import Salary
+        return obj.salaries.filter(status='Unpaid').aggregate(total=models.Sum('total_salary'))['total'] or 0
+
+    def get_record_count(self, obj):
+        return obj.salaries.count()
+
+    def get_last_payment_date(self, obj):
+        last_salary = obj.salaries.order_by('-end_date').first()
+        return last_salary.end_date if last_salary else None
+
 class SalarySerializer(serializers.ModelSerializer):
     employee_name = serializers.ReadOnlyField(source='employee.username')
     absent_days = serializers.SerializerMethodField()
@@ -543,9 +732,16 @@ class SalarySerializer(serializers.ModelSerializer):
         read_only_fields = ['working_days', 'present_days', 'total_salary', 'overtime_pay', 'late_deduction']
 
 class AttendanceSerializer(serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Attendance
         fields = '__all__'
+
+    def get_employee_name(self, obj):
+        if obj.employee.first_name or obj.employee.last_name:
+            return f"{obj.employee.first_name} {obj.employee.last_name}".strip()
+        return obj.employee.username
 
 class UserSalarySerializer(serializers.ModelSerializer):
     username = serializers.ReadOnlyField(source='user.username')
@@ -581,7 +777,7 @@ class ProjectTeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProjectTeam
         fields = ['id', 'project', 'team', 'team_detail', 'members',
-                  'start_date', 'end_date', 'deadline', 'actual_end_date', 'status', 'payment_status', 'cost', 'description', 'created_at', 'updated_at']
+                  'start_date', 'end_date', 'deadline', 'actual_end_date', 'status', 'invoice_status', 'payment_status', 'cost', 'description', 'created_at', 'updated_at']
         extra_kwargs = {
             'id': {'read_only': False, 'required': False, 'allow_null': True},
             'project': {'required': False, 'allow_null': True},
@@ -653,7 +849,7 @@ class ProjectServiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProjectService
         fields = ['id', 'project', 'client_address', 'name', 'description', 
-                  'deadline', 'actual_end_date', 'status', 'payment_status', 'cost', 'created_at', 'teams', 'members']
+                  'deadline', 'actual_end_date', 'status', 'invoice_status', 'payment_status', 'cost', 'created_at', 'teams', 'members']
         extra_kwargs = {
             'id': {'read_only': False, 'required': False, 'allow_null': True},
             'project': {'required': False, 'allow_null': True},
@@ -1050,3 +1246,12 @@ class ProjectSerializer(serializers.ModelSerializer):
                     ProjectServiceMember.objects.create(service=svc, **sm_data)
 
         return instance
+
+class ScheduleSerializer(serializers.ModelSerializer):
+    assigned_to_name = serializers.ReadOnlyField(source='assigned_to.username')
+    assigned_role_name = serializers.ReadOnlyField(source='assigned_role.name')
+
+    class Meta:
+        model = Schedule
+        fields = '__all__'
+

@@ -20,22 +20,23 @@ def find_bug():
         print("--- DEBUGGING BALANCE SHEET PDF ---")
         
         # Setup mock request
-        factory = RequestFactory()
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        factory = APIRequestFactory()
         user = User.objects.filter(is_superuser=True).first()
         if not user:
             user = User.objects.first()
             
-        print(f"Using User: {user.username if user else 'None (Make sure users exist in DB)'}")
+        print(f"Using User: {user.username if user else 'None'}")
         
         # Mimic the browser request
         request = factory.get('/api/reports/balance-sheet/', {
             'filter_type': 'this_month', 
             'export': 'pdf'
         })
-        request.user = user
         
         # Execute view
         view = BalanceSheetView.as_view()
+        force_authenticate(request, user=user)
         print("Generating PDF...")
         response = view(request)
         

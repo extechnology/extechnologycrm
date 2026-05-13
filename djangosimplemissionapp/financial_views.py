@@ -268,8 +268,16 @@ class BalanceSheetView(APIView):
         }
         
         if request.query_params.get('export') == 'pdf':
-            buffer = generate_balance_sheet_pdf(data, request.query_params)
-            return FileResponse(buffer, as_attachment=True, filename='Balance_Sheet.pdf')
+            try:
+                buffer = generate_balance_sheet_pdf(data, request.query_params)
+                return FileResponse(buffer, as_attachment=True, filename='Balance_Sheet.pdf')
+            except Exception as e:
+                import traceback
+                return Response({
+                    "error": "PDF Generation Failed",
+                    "details": str(e),
+                    "traceback": traceback.format_exc()
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response(data)
 

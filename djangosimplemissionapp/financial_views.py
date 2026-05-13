@@ -190,7 +190,7 @@ class BalanceSheetView(APIView):
 
         # Cash Calculation (Simplified to use the cash flow logic but all-time/up-to-date)
         payments = Payment.objects.filter(cash_in_q).aggregate(total=Sum('amount'))['total'] or 0
-        other_income = OtherIncome.objects.filter(cash_out_q).aggregate(total=Sum('amount'))['total'] or 0
+        other_income = OtherIncome.objects.filter(cash_in_q).aggregate(total=Sum('amount'))['total'] or 0
         advances = ClientAdvance.objects.filter(advance_q).aggregate(total=Sum('amount'))['total'] or 0
         total_cash_in = payments + other_income + advances
         
@@ -277,8 +277,11 @@ class BalanceSheetView(APIView):
         
         if request.query_params.get('export') == 'pdf':
             try:
+                from django.http import HttpResponse
                 buffer = generate_balance_sheet_pdf(data, request.query_params)
-                return FileResponse(buffer, as_attachment=True, filename='Balance_Sheet.pdf')
+                response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+                response['Content-Disposition'] = 'attachment; filename="Balance_Sheet.pdf"'
+                return response
             except Exception as e:
                 import traceback
                 return Response({

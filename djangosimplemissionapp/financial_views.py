@@ -2,7 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from django.db.models import Sum, Q, Min, Max, F, DecimalField
+from django.db.models import Sum, Q, Min, Max, F, DecimalField, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from datetime import datetime, timedelta
@@ -75,7 +75,10 @@ class IncomeStatementView(APIView):
         domains = ProjectDomain.objects.filter(domain_q)
         servers = ProjectServer.objects.filter(domain_q)
 
-        salary_expense = sum([(s.basic + s.bonus - s.deductions) for s in salaries])
+        # Optimized Salary Expense Calculation (Database-level)
+        salary_expense = Salary.objects.filter(salary_q).aggregate(
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
+        )['total'] or 0
         other_expense_total = other_expenses.aggregate(total=Sum('amount'))['total'] or 0
         domain_expense = domains.aggregate(total=Sum('cost'))['total'] or 0
         server_expense = servers.aggregate(total=Sum('cost'))['total'] or 0
@@ -127,9 +130,9 @@ class CashFlowStatementView(APIView):
 
         other_expenses = OtherExpense.objects.filter(expense_q).aggregate(total=Sum('amount'))['total'] or 0
         
-        # Only Paid salaries in period
+        # Only Paid salaries in period (Optimized, Null-Safe & Type-Safe)
         salary_out = Salary.objects.filter(salary_q, status='Paid').aggregate(
-            total=Sum(F('basic') + F('bonus') - F('deductions'))
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         
         domains_paid = ProjectDomain.objects.filter(domain_q, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
@@ -212,9 +215,9 @@ class BalanceSheetView(APIView):
         total_cash_in = payments + other_income + advances
         
         other_exp = OtherExpense.objects.filter(cash_out_q).aggregate(total=Sum('amount'))['total'] or 0
-        # Salaries Paid up to date (Optimized & Null-Safe)
+        # Salaries Paid up to date (Optimized, Null-Safe & Type-Safe)
         sals_paid = Salary.objects.filter(salary_q, status='Paid').aggregate(
-            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), 0) - Coalesce(F('deductions'), 0)), 0, output_field=DecimalField())
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         
         domain_cost = ProjectDomain.objects.filter(payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
@@ -233,10 +236,9 @@ class BalanceSheetView(APIView):
 
         total_assets = cash_on_hand + accounts_receivable
 
-        # Liabilities
-        # Accounts Payable (Optimized for Server)
+        # Accounts Payable (Optimized, Null-Safe & Type-Safe)
         unpaid_sals = Salary.objects.filter(salary_q).exclude(status='Paid').aggregate(
-            total=Sum(F('basic') + F('bonus') - F('deductions'))
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         
         unpaid_domains = ProjectDomain.objects.filter(payment_status='UNPAID').aggregate(total=Sum('cost'))['total'] or 0
@@ -258,9 +260,9 @@ class BalanceSheetView(APIView):
         invoice_rev = Invoice.objects.filter(invoice_q).aggregate(total=Sum('total_amount'))['total'] or 0
         total_rev = invoice_rev + other_income
         
-        # Salaries Paid in this period (Optimized & Null-Safe)
+        # Salaries Paid (Optimized, Null-Safe & Type-Safe)
         salary_exp = Salary.objects.filter(salary_q).aggregate(
-            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), 0) - Coalesce(F('deductions'), 0)), 0, output_field=DecimalField())
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         domain_exp = ProjectDomain.objects.filter().aggregate(total=Sum('cost'))['total'] or 0
         server_exp = ProjectServer.objects.filter().aggregate(total=Sum('cost'))['total'] or 0

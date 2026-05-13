@@ -195,8 +195,11 @@ class BalanceSheetView(APIView):
         total_cash_in = payments + other_income + advances
         
         other_exp = OtherExpense.objects.filter(cash_out_q).aggregate(total=Sum('amount'))['total'] or 0
-        # Salaries Paid up to date
-        sals_paid = sum([(s.basic + s.bonus - s.deductions) for s in Salary.objects.filter(salary_q, status='Paid')])
+        # Salaries Paid up to date (Optimized for Server)
+        from django.db.models import F
+        sals_paid = Salary.objects.filter(salary_q, status='Paid').aggregate(
+            total=Sum(F('basic') + F('bonus') - F('deductions'))
+        )['total'] or 0
         
         domain_cost = ProjectDomain.objects.filter(payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
         if end_date_str:
@@ -215,8 +218,10 @@ class BalanceSheetView(APIView):
         total_assets = cash_on_hand + accounts_receivable
 
         # Liabilities
-        # Accounts Payable (Unpaid Salaries, Unpaid Domains/Servers)
-        unpaid_sals = sum([(s.basic + s.bonus - s.deductions) for s in Salary.objects.filter(salary_q).exclude(status='Paid')])
+        # Accounts Payable (Optimized for Server)
+        unpaid_sals = Salary.objects.filter(salary_q).exclude(status='Paid').aggregate(
+            total=Sum(F('basic') + F('bonus') - F('deductions'))
+        )['total'] or 0
         
         unpaid_domains = ProjectDomain.objects.filter(payment_status='UNPAID').aggregate(total=Sum('cost'))['total'] or 0
         if end_date_str:
@@ -237,7 +242,10 @@ class BalanceSheetView(APIView):
         invoice_rev = Invoice.objects.filter(invoice_q).aggregate(total=Sum('total_amount'))['total'] or 0
         total_rev = invoice_rev + other_income
         
-        salary_exp = sum([(s.basic + s.bonus - s.deductions) for s in Salary.objects.filter(salary_q)])
+        # Equity calculations (Optimized for Server)
+        salary_exp = Salary.objects.filter(salary_q).aggregate(
+            total=Sum(F('basic') + F('bonus') - F('deductions'))
+        )['total'] or 0
         domain_exp = ProjectDomain.objects.filter().aggregate(total=Sum('cost'))['total'] or 0
         server_exp = ProjectServer.objects.filter().aggregate(total=Sum('cost'))['total'] or 0
         

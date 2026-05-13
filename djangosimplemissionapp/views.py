@@ -929,32 +929,40 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
 
+        # Activity Report Context
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        employee_name = 'All Employees'
+        if employee_id:
+            employee = User.objects.filter(id=employee_id).first()
+            if employee:
+                employee_name = employee.get_full_name() or employee.username
+
+        context = {
+            'title': 'Employee Activity Report',
+            'employee_name': employee_name,
+            'date_range': f"{start_date} to {end_date}" if start_date and end_date else "All Time"
+        }
+
         if request.query_params.get('export') == 'pdf':
             from .pdf_utils import generate_activity_pdf
-            from django.contrib.auth import get_user_model
-            from django.http import FileResponse
-            User = get_user_model()
-            
-            employee_name = 'All Employees'
-            e_id = request.query_params.get('employee_id')
-            if e_id:
-                employee = User.objects.filter(id=e_id).first()
-                if employee:
-                    employee_name = employee.get_full_name() or employee.username
-
-            context = {
-                'title': 'Employee Activity Report',
-                'employee_name': employee_name,
-                'date_range': f"{start_date} to {end_date}" if start_date and end_date else "All Time"
-            }
+            from django.http import HttpResponse
             buffer = generate_activity_pdf(queryset, context)
+            pdf_data = buffer.getvalue()
             filename = f"Employee_Activity_Report_{timezone.now().strftime('%Y%m%d')}.pdf"
-            return FileResponse(buffer, as_attachment=True, filename=filename)
+            
+            response = HttpResponse(pdf_data, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response['Content-Length'] = len(pdf_data)
+            response["Access-Control-Allow-Origin"] = "*"
+            response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            response["Access-Control-Allow-Headers"] = "*"
+            return response
 
         elif request.query_params.get('export') == 'docx':
             from .docx_utils import generate_activity_docx
             from django.contrib.auth import get_user_model
-            from django.http import FileResponse
+            from django.http import HttpResponse
             User = get_user_model()
             
             employee_name = 'All Employees'
@@ -970,8 +978,16 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
                 'date_range': f"{start_date} to {end_date}" if start_date and end_date else "All Time"
             }
             buffer = generate_activity_docx(queryset, context)
+            docx_data = buffer.getvalue()
             filename = f"Employee_Activity_Report_{timezone.now().strftime('%Y%m%d')}.docx"
-            return FileResponse(buffer, as_attachment=True, filename=filename, content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+            
+            response = HttpResponse(docx_data, content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response['Content-Length'] = len(docx_data)
+            response["Access-Control-Allow-Origin"] = "*"
+            response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            response["Access-Control-Allow-Headers"] = "*"
+            return response
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -1013,9 +1029,18 @@ class EmployeeSpecificActivityListAPIView(APIView):
                 'employee_name': employee_name,
                 'date_range': f"{start_date} to {end_date}" if start_date and end_date else "All Time"
             }
+            from django.http import HttpResponse
             buffer = generate_activity_pdf(activities, context)
+            pdf_data = buffer.getvalue()
             filename = f"Activity_Report_{employee_name}_{timezone.now().strftime('%Y%m%d')}.pdf"
-            return FileResponse(buffer, as_attachment=True, filename=filename)
+            
+            response = HttpResponse(pdf_data, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response['Content-Length'] = len(pdf_data)
+            response["Access-Control-Allow-Origin"] = "*"
+            response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            response["Access-Control-Allow-Headers"] = "*"
+            return response
 
         # 4. Standard Paginated Response
         paginator = PageNumberPagination()
@@ -1688,10 +1713,21 @@ class InvoicePDFView(APIView):
         except Invoice.DoesNotExist:
             return Response({"error": "Invoice not found for this client"}, status=status.HTTP_404_NOT_FOUND)
 
+        from django.http import HttpResponse
         buffer = generate_invoice_pdf(invoice)
+        pdf_data = buffer.getvalue()
         filename = f"Invoice_{invoice.invoice_number or invoice.id}.pdf"
         
-        return FileResponse(buffer, as_attachment=True, filename=filename)
+        response = HttpResponse(pdf_data, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['Content-Length'] = len(pdf_data)
+        
+        # Manual Security/CORS headers for cPanel stability
+        response["Access-Control-Allow-Origin"] = "*"
+        response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "*"
+        
+        return response
 
 
 class ClientAdvanceListAPIView(ListCreateAPIView):

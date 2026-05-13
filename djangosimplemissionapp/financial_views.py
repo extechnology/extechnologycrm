@@ -127,8 +127,9 @@ class CashFlowStatementView(APIView):
         other_expenses = OtherExpense.objects.filter(expense_q).aggregate(total=Sum('amount'))['total'] or 0
         
         # Only Paid salaries in period
-        paid_salaries = Salary.objects.filter(salary_q, status='Paid')
-        salary_out = sum([(s.basic + s.bonus - s.deductions) for s in paid_salaries])
+        salary_out = Salary.objects.filter(salary_q, status='Paid').aggregate(
+            total=Sum(F('basic') + F('bonus') - F('deductions'))
+        )['total'] or 0
         
         domains_paid = ProjectDomain.objects.filter(domain_q, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
         servers_paid = ProjectServer.objects.filter(domain_q, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
@@ -154,8 +155,23 @@ class CashFlowStatementView(APIView):
         }
         
         if request.query_params.get('export') == 'pdf':
-            buffer = generate_cash_flow_statement_pdf(data, request.query_params)
-            return FileResponse(buffer, as_attachment=True, filename='Cash_Flow_Statement.pdf')
+            try:
+                buffer = generate_cash_flow_statement_pdf(data, request.query_params)
+                pdf_data = buffer.getvalue()
+                response = HttpResponse(pdf_data, content_type='application/pdf')
+                response['Content-Disposition'] = 'attachment; filename="Cash_Flow_Statement.pdf"'
+                response['Content-Length'] = len(pdf_data)
+                response["Access-Control-Allow-Origin"] = "*"
+                response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+                response["Access-Control-Allow-Headers"] = "*"
+                return response
+            except Exception as e:
+                import traceback
+                return Response({
+                    "error": "PDF Generation Failed",
+                    "details": str(e),
+                    "traceback": traceback.format_exc()
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
         return Response(data)
 
@@ -196,7 +212,6 @@ class BalanceSheetView(APIView):
         
         other_exp = OtherExpense.objects.filter(cash_out_q).aggregate(total=Sum('amount'))['total'] or 0
         # Salaries Paid up to date (Optimized for Server)
-        from django.db.models import F
         sals_paid = Salary.objects.filter(salary_q, status='Paid').aggregate(
             total=Sum(F('basic') + F('bonus') - F('deductions'))
         )['total'] or 0
@@ -277,7 +292,6 @@ class BalanceSheetView(APIView):
         
         if request.query_params.get('export') == 'pdf':
             try:
-                from django.http import HttpResponse
                 buffer = generate_balance_sheet_pdf(data, request.query_params)
                 pdf_data = buffer.getvalue()
                 response = HttpResponse(pdf_data, content_type='application/pdf')

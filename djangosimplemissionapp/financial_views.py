@@ -277,9 +277,9 @@ class BalanceSheetView(APIView):
         
         if request.query_params.get('export') == 'pdf':
             try:
-                from django.http import HttpResponse
                 buffer = generate_balance_sheet_pdf(data, request.query_params)
-                response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+                # Using DRF Response to ensure CORS headers are included
+                response = Response(buffer.getvalue(), content_type='application/pdf')
                 response['Content-Disposition'] = 'attachment; filename="Balance_Sheet.pdf"'
                 return response
             except Exception as e:

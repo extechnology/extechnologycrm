@@ -105,8 +105,8 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'fqtrwvzi_EXCRM_DATABASE',
-        'USER': 'fqtrwvzi_excrm_user',
-        'PASSWORD': 'excrm@2026',
+        'USER': 'fqtrwvzi_exshamil',
+        'PASSWORD': 'shamil@123',
         'HOST': 'localhost',   # Or your DB host
         'PORT': '3306',        # Default MySQL port
     }

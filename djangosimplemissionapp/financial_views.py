@@ -2,7 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from django.db.models import Sum, Q, Min, Max
+from django.db.models import Sum, Q, Min, Max, F, DecimalField
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from datetime import datetime, timedelta
 from django.http import FileResponse
@@ -211,9 +212,9 @@ class BalanceSheetView(APIView):
         total_cash_in = payments + other_income + advances
         
         other_exp = OtherExpense.objects.filter(cash_out_q).aggregate(total=Sum('amount'))['total'] or 0
-        # Salaries Paid up to date (Optimized for Server)
+        # Salaries Paid up to date (Optimized & Null-Safe)
         sals_paid = Salary.objects.filter(salary_q, status='Paid').aggregate(
-            total=Sum(F('basic') + F('bonus') - F('deductions'))
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), 0) - Coalesce(F('deductions'), 0)), 0, output_field=DecimalField())
         )['total'] or 0
         
         domain_cost = ProjectDomain.objects.filter(payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
@@ -257,9 +258,9 @@ class BalanceSheetView(APIView):
         invoice_rev = Invoice.objects.filter(invoice_q).aggregate(total=Sum('total_amount'))['total'] or 0
         total_rev = invoice_rev + other_income
         
-        # Equity calculations (Optimized for Server)
+        # Salaries Paid in this period (Optimized & Null-Safe)
         salary_exp = Salary.objects.filter(salary_q).aggregate(
-            total=Sum(F('basic') + F('bonus') - F('deductions'))
+            total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), 0) - Coalesce(F('deductions'), 0)), 0, output_field=DecimalField())
         )['total'] or 0
         domain_exp = ProjectDomain.objects.filter().aggregate(total=Sum('cost'))['total'] or 0
         server_exp = ProjectServer.objects.filter().aggregate(total=Sum('cost'))['total'] or 0

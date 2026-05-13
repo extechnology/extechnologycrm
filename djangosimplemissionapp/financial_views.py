@@ -6,7 +6,7 @@ from django.db.models import Sum, Q, Min, Max, F, DecimalField
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from datetime import datetime, timedelta
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse
 
 from .models import (
     Invoice, OtherIncome, Salary, OtherExpense, ProjectDomain, ProjectServer, 

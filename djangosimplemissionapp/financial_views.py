@@ -277,10 +277,16 @@ class BalanceSheetView(APIView):
         
         if request.query_params.get('export') == 'pdf':
             try:
+                from django.http import HttpResponse
                 buffer = generate_balance_sheet_pdf(data, request.query_params)
-                # Using DRF Response to ensure CORS headers are included
-                response = Response(buffer.getvalue(), content_type='application/pdf')
+                pdf_data = buffer.getvalue()
+                response = HttpResponse(pdf_data, content_type='application/pdf')
                 response['Content-Disposition'] = 'attachment; filename="Balance_Sheet.pdf"'
+                response['Content-Length'] = len(pdf_data)
+                # Manual CORS headers for stability
+                response["Access-Control-Allow-Origin"] = "*"
+                response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+                response["Access-Control-Allow-Headers"] = "*"
                 return response
             except Exception as e:
                 import traceback

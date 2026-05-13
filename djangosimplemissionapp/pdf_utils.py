@@ -276,6 +276,10 @@ def generate_invoice_pdf(invoice):
     LIGHT_GREY = colors.HexColor("#EAEAEA")
 
     buffer = io.BytesIO()
+    # Fix for 'io.UnsupportedOperation: fileno' on some servers
+    if not hasattr(buffer, 'fileno'):
+        buffer.fileno = lambda: None
+        
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
@@ -513,6 +517,10 @@ def generate_invoice_pdf(invoice):
     return buffer
 def _create_financial_pdf_base(title, data_sections, context, total_text, total_val):
     buffer = io.BytesIO()
+    # Fix for 'io.UnsupportedOperation: fileno' on some servers
+    if not hasattr(buffer, 'fileno'):
+        buffer.fileno = lambda: None
+        
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,

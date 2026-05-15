@@ -38,7 +38,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://server.excrm.in",
     "http://excrm.in",
     "https://server.excrm.in",
-    "https://excrm.in"
+    "https://excrm.in",
+    "https://dashboard.excrm.in",
+    "http://dashboard.excrm.in"
 
 ]
 
@@ -48,7 +50,9 @@ CSRF_TRUSTED_ORIGINS = [
     "http://server.excrm.in",
     "http://excrm.in",
     "https://server.excrm.in",
-    "https://excrm.in"
+    "https://excrm.in",
+    "https://dashboard.excrm.in",
+    "http://dashboard.excrm.in"
     
 ]
 

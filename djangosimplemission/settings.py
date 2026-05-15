@@ -34,25 +34,17 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
-    "https://extechnolgycrmfrontendcopy.vercel.app",
-    "http://server.excrm.in",
     "http://excrm.in",
     "https://server.excrm.in",
-    "https://excrm.in",
-    "https://dashboard.excrm.in",
-    "http://dashboard.excrm.in"
+    "https://excrm.in"
 
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
-    "https://extechnolgycrmfrontendcopy.vercel.app",
-    "http://server.excrm.in",
     "http://excrm.in",
     "https://server.excrm.in",
-    "https://excrm.in",
-    "https://dashboard.excrm.in",
-    "http://dashboard.excrm.in"
+    "https://excrm.in"
     
 ]
 
@@ -115,7 +107,7 @@ DATABASES = {
         'PORT': '3306',        # Default MySQL port
     }
 }
-# DATABASES = {
+# DATABASES = { 
 #     'default': {
 #         'ENGINE': 'django.db.backends.mysql',
 #         'NAME': config('DB_NAME'),

@@ -403,6 +403,7 @@ class ProjectExcutionSerializer(serializers.ModelSerializer):
         extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
 
 class ProjectTeamMemberSerializer(serializers.ModelSerializer):
+    username = serializers.ReadOnlyField(source='employee.username')
     class Meta:
         model = ProjectTeamMember
         fields = '__all__'

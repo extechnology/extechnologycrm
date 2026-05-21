@@ -8,7 +8,6 @@ from django.db.models import Sum, Count
 import calendar
 from datetime import timedelta
 
-
 class UserManager(BaseUserManager):
     def create_user(self, email, username, phone_number=None, password=None, **extra_fields):
         if not email:
@@ -85,7 +84,6 @@ class User(AbstractUser):
     def __str__(self):
         return self.username
 
-
     @property
     def role_names(self):
         names = []
@@ -159,7 +157,6 @@ class User(AbstractUser):
             is_staff=is_staff
         )
 
-
 @receiver(post_save, sender=User)
 def update_user_permissions(sender, instance, created, **kwargs):
     if not created:
@@ -177,7 +174,6 @@ class ProjectClient(models.Model):
 
     def __str__(self):
         return self.company_name or "Unnamed Client"
-
 
 class ProjectBusinessAddress(models.Model):
     # Changed to ManyToMany to allow full sharing flexibility
@@ -230,7 +226,6 @@ class ClientAdvance(models.Model):
 
     def __str__(self):
         return f"{self.client} - {self.amount}"
-
 
 class DomainOrServerThirdPartyServiceProvider(models.Model):
     company_name = models.CharField(max_length=200, blank=True, null=True)
@@ -398,19 +393,19 @@ class ProjectExbot(models.Model):
             ("view_exbot_stats", "Can view exbot analytics and stats"),
         ]
 
-
 class ProjectFinance(models.Model):
     INVOICE_STATUS_CHOICES = (
         ('NOT_INVOICED', 'Not Invoiced'),
         ('INVOICED', 'Invoiced'),
     )
+    PAYMENT_STATUS_CHOICES = (
+        ('PAID', 'Paid'),
+        ('UNPAID', 'Unpaid'),
+    )
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_finances', null=True, blank=True)
     project_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Fixed Project Cost (Budget)")
-    manpower_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Total Manpower Cost")
-    total_invoiced = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    total_paid = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    total_balance_due = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     invoice_status = models.CharField(max_length=20, choices=INVOICE_STATUS_CHOICES, default='NOT_INVOICED')
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='UNPAID')
 
     def __str__(self):
         return f"Finance Record {self.id}"
@@ -431,7 +426,6 @@ class Team(models.Model):
             ("view_all_team_performance", "Can view performance of all teams"),
             ("view_own_team_performance", "Can view performance of own team only"),
         ]
-
 
 class ProjectTeam(models.Model):
     STATUS_CHOICES = [
@@ -474,7 +468,6 @@ class ProjectNature(models.Model):
     def __str__(self):
         return self.name
 
-
 class Project(models.Model):
     STATUS_CHOICES = [
         ('Pending', 'Pending'),
@@ -498,7 +491,6 @@ class Project(models.Model):
             ("view_projectstats", "Can view project analytics and stats"),
         ]
 
-
 class ProjectDocument(models.Model):
     project = models.ForeignKey(
         "Project", 
@@ -514,7 +506,6 @@ class ProjectDocument(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.project.name if self.project else 'No Project'}"
-
 
 class ProjectBaseInformation(models.Model):
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_base_informations', null=True, blank=True)
@@ -532,6 +523,7 @@ class ProjectExcution(models.Model):
     confirmed_end_date = models.DateField(help_text="Deadline", null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     
+
 class ProjectTeamMember(models.Model):
     STATUS_CHOICES = [
         ('Pending', 'Pending'),
@@ -551,8 +543,6 @@ class ProjectTeamMember(models.Model):
 
     def __str__(self):
         return f"{self.employee.username} - {self.role}"
-
-
 
 class ProjectService(models.Model):
     STATUS_CHOICES = [
@@ -711,7 +701,6 @@ class EmployeeDailyActivity(models.Model):
     def __str__(self):
         return f"{self.employee.username} - {self.date}"
 
-
 class ActivityLog(models.Model):
     activity = models.ForeignKey(EmployeeDailyActivity, on_delete=models.CASCADE, related_name='logs')
     description = models.TextField()
@@ -804,6 +793,9 @@ class Invoice(models.Model):
             if item.project_exbot:
                 item.project_exbot.payment_status = "PAID"
                 item.project_exbot.save(update_fields=["payment_status"])
+            if item.project_finance:
+                item.project_finance.payment_status = "PAID"
+                item.project_finance.save(update_fields=["payment_status"])
 
     def update_totals(self):
         """
@@ -1143,6 +1135,12 @@ class EmployeeLeave(models.Model):
 
     class Meta:
         ordering = ['-start_date']
+        permissions = [
+            ("viewall_employeeleave", "Can view all employee leaves"),
+            ("approve_employeeleave", "Can approve employee leave"),
+            ("reject_employeeleave", "Can reject employee leave"),
+
+        ]
 
     def __str__(self):
         return f"{self.employee.username}: {self.start_date} to {self.end_date} ({self.status})"
@@ -1155,7 +1153,6 @@ class Company(models.Model):
     employee_leaves = models.ManyToManyField('EmployeeLeave', related_name='company')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)       
-
 
 class CompanyProfile(models.Model):
     """Singleton model for company-wide settings (logo, name, type, contact)."""
@@ -1206,13 +1203,11 @@ class Salary(models.Model):
     total_salary = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     created_at = models.DateTimeField(auto_now_add=True)
 
-
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.employee.username} ({self.start_date} to {self.end_date})"
-
 
 class Attendance(models.Model):
     STATUS_CHOICES = (
@@ -1309,7 +1304,6 @@ def get_cycle_end_date(start_date, working_days=26):
             current += timedelta(days=1)
     return current
 
-
 def get_cycle_for_date(joining_date, target_date, working_days=26):
     """
     Finds the start_date and end_date of the 26-non-Sunday-day cycle
@@ -1325,7 +1319,6 @@ def get_cycle_for_date(joining_date, target_date, working_days=26):
         # Move to next cycle start (day after end)
         current_start = current_end + timedelta(days=1)
     return None, None
-
 
 def calculate_salary(salary):
     employee = salary.employee
@@ -1447,7 +1440,6 @@ def update_salary(sender, instance, **kwargs):
 
     calculate_salary(salary)
 
-
 def generate_salary_records(employee, joining_date):
     """
     Auto-generates all 26-day salary cycles from joining_date to today.
@@ -1482,7 +1474,6 @@ def generate_salary_records(employee, joining_date):
         # Next cycle starts the day after the end
         current_start = current_end + timedelta(days=1)
 
-
 @receiver(post_save, sender=UserSalary)
 def auto_generate_cycles(sender, instance, **kwargs):
     if instance.joining_date:
@@ -1499,7 +1490,6 @@ def auto_generate_cycles(sender, instance, **kwargs):
         # Regenerate all cycles from the new joining date
         generate_salary_records(user, new_joining_date)
 
-
 @receiver(post_delete, sender=Attendance)
 def delete_attendance_update_salary(sender, instance, **kwargs):
     employee = instance.employee
@@ -1513,7 +1503,6 @@ def delete_attendance_update_salary(sender, instance, **kwargs):
         calculate_salary(salary)
     except Salary.DoesNotExist:
         pass
-
 
 @receiver(post_delete, sender=InvoiceItem)
 def reset_invoice_status_on_delete(sender, instance, **kwargs):
@@ -1547,7 +1536,6 @@ def reset_invoice_status_on_delete(sender, instance, **kwargs):
             instance.project_finance.invoice_status = 'NOT_INVOICED'
             instance.project_finance.save(update_fields=['invoice_status'])
 
-
 @receiver(models.signals.pre_save, sender=User)
 def increment_token_version_on_role_change(sender, instance, **kwargs):
     if instance.id:
@@ -1574,7 +1562,6 @@ class Lead(models.Model):
         ('closed', 'Closed'),
         ('denied', 'Denied'),
     ]
-
 
     FOLLOWUP_STATUS = [
         ('yes', 'Yes'),
@@ -1634,7 +1621,6 @@ class FollowUp(models.Model):
     
     class Meta:
         ordering = ['-created_at']
-
 
     def __str__(self):
         return f"Follow-up for {self.lead.company_name} on {self.followup_date}"

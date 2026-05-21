@@ -3,6 +3,7 @@ from rest_framework import views, viewsets, filters
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView, ListAPIView
+from rest_framework.exceptions import PermissionDenied
 from django.db.models import Q, Subquery, OuterRef
 from .models import (
     User,ProjectClient,ProjectBusinessAddress,DomainOrServerThirdPartyServiceProvider,Role,
@@ -25,7 +26,6 @@ from .serializers import (
     LeadSerializer, FollowUpSerializer, ScheduleSerializer, EmployeeSalarySummarySerializer
 )
 
-
 from rest_framework.decorators import action
 from .utils import get_date_filter_q
 from .pdf_utils import generate_invoice_pdf
@@ -45,7 +45,6 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = 'page_size'
     max_page_size = 100
-
 
 class UserListAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -196,8 +195,6 @@ class CurrentUserView(views.APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -233,7 +230,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
-
 class ChangePasswordView(views.APIView):
     permission_classes = [IsAuthenticated]
 
@@ -247,7 +243,6 @@ class ChangePasswordView(views.APIView):
                 return Response({'status': 'password set'}, status=status.HTTP_200_OK)
             return Response({'old_password': ['Wrong password.']}, status=status.HTTP_400_BAD_REQUEST)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 class RoleListCreateAPIView(ListCreateAPIView):
     queryset = Role.objects.all()
@@ -271,19 +266,28 @@ class PermissionListAPIView(views.APIView):
 
 class RoleCreateAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        name = request.data.get('name', '').strip().upper()
+        name = request.data.get('name', '').strip().title()
         if not name:
             return Response({'error': 'Role name is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         perms_codenames = request.data.get('permissions', [])
-        
-        role, created = Role.objects.get_or_create(name=name)
+
+        role = Role.objects.filter(name__iexact=name).first()
+        created = False
+
+        if not role:
+            role = Role.objects.create(name=name)
+            created = True
+
         permissions = Permission.objects.filter(codename__in=perms_codenames)
         role.permissions.set(permissions)
-        
-        return Response({'message': f'Role {"created" if created else "updated"} with {permissions.count()} permissions'}, status=status.HTTP_201_CREATED)
 
+        return Response(
+            {'message': f'Role {"created" if created else "updated"} with {permissions.count()} permissions'},
+            status=status.HTTP_201_CREATED
+        )
 
 class AdminChangeUserPasswordView(views.APIView):
     permission_classes = [IsSuperAdmin]
@@ -302,8 +306,6 @@ class AdminChangeUserPasswordView(views.APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-
 class ProjectClientListCreateAPIView(ListCreateAPIView):
     queryset = ProjectClient.objects.all()
     serializer_class = ProjectClientSerializer
@@ -312,13 +314,10 @@ class ProjectClientListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['company_name', 'contact_person', 'email', 'phone']
 
-
 class ProjectClientDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ProjectClient.objects.all()
     serializer_class = ProjectClientSerializer
     permission_classes = [IsAuthenticated]
-
-
 
 class ProjectBusinessAddressListCreateAPIView(ListCreateAPIView):
     queryset = ProjectBusinessAddress.objects.all()
@@ -334,7 +333,6 @@ class ProjectBusinessAddressListCreateAPIView(ListCreateAPIView):
         if project_id:
             queryset = queryset.filter(projects__id=project_id)
         return queryset
-
 
 class ProjectBusinessAddressDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ProjectBusinessAddress.objects.all()
@@ -442,8 +440,6 @@ class ClientSummaryListAPIView(ListCreateAPIView):
 
         return queryset
 
-
-
 class DomainOrServerThirdPartyServiceProviderListCreateAPIView(ListCreateAPIView):
     queryset = DomainOrServerThirdPartyServiceProvider.objects.all()
     serializer_class = DomainOrServerThirdPartyServiceProviderSerializer
@@ -451,7 +447,6 @@ class DomainOrServerThirdPartyServiceProviderListCreateAPIView(ListCreateAPIView
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['company_name', 'contact_person', 'email', 'phone']
-
 
 class DomainOrServerThirdPartyServiceProviderDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = DomainOrServerThirdPartyServiceProvider.objects.all()
@@ -713,7 +708,6 @@ class ProjectExbotDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ProjectExbot.objects.all()
     serializer_class = ProjectExbotSerializer
     permission_classes = [IsAuthenticated]
-
 
 class ProjectFinanceListCreateAPIView(ListCreateAPIView):
     queryset = ProjectFinance.objects.all()
@@ -1172,7 +1166,6 @@ class ActivityLogDetailAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = ActivityLogSerializer
     permission_classes = [IsAuthenticated]
 
-
 class ClientInvoiceListAPIView(ListCreateAPIView):
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
@@ -1485,17 +1478,52 @@ class MarkAllNotificationsReadAPIView(views.APIView):
         return Response({'message': 'All notifications marked as read'}, status=status.HTTP_200_OK)
 
 class EmployeeLeaveListCreateAPIView(ListCreateAPIView):
-    queryset = EmployeeLeave.objects.all()
     serializer_class = EmployeeLeaveSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['employee__username', 'status', 'description']
 
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_employeeleave'):
+            return EmployeeLeave.objects.all().order_by('-start_date')
+
+        return EmployeeLeave.objects.filter(employee=user).order_by('-start_date')
+
 class EmployeeLeaveDetailAPIView(RetrieveUpdateDestroyAPIView):
-    queryset = EmployeeLeave.objects.all()
     serializer_class = EmployeeLeaveSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_employeeleave'):
+            return EmployeeLeave.objects.all()
+
+        return EmployeeLeave.objects.filter(employee=user)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        new_status = serializer.validated_data.get('status')
+
+        if new_status:
+            normalized_status = str(new_status).strip().lower()
+
+            if normalized_status in ['approved', 'approve']:
+                if not user.is_superuser and not user.has_perm('djangosimplemissionapp.approve_employeeleave'):
+                    raise PermissionDenied("You do not have permission to approve leave.")
+                serializer.save(approved_by=user)
+                return
+
+            if normalized_status in ['rejected', 'reject']:
+                if not user.is_superuser and not user.has_perm('djangosimplemissionapp.reject_employeeleave'):
+                    raise PermissionDenied("You do not have permission to reject leave.")
+                serializer.save(approved_by=user)
+                return
+
+        serializer.save()
 
 class CompanyListCreateAPIView(ListCreateAPIView):
     queryset = Company.objects.all()
@@ -1702,8 +1730,6 @@ class ProjectDocumentDetailAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = ProjectDocumentSerializer
     permission_classes = [IsAuthenticated]
 
-
-
 class InvoicePDFView(APIView):  
     permission_classes = [IsAuthenticated]
 
@@ -1729,7 +1755,6 @@ class InvoicePDFView(APIView):
         
         return response
 
-
 class ClientAdvanceListAPIView(ListCreateAPIView):
     serializer_class = ClientAdvanceSerializer
     permission_classes = [IsAuthenticated]
@@ -1750,7 +1775,6 @@ class ClientAdvanceDetailAPIView(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         client_id = self.kwargs.get('client_id')
         return ClientAdvance.objects.filter(client_id=client_id)
-
 
 class EmployeePerformanceAPIView(APIView):
     """
@@ -1949,7 +1973,6 @@ class EmployeePerformanceAPIView(APIView):
             'overall_status': 'On Track' if risk == 'Low' else ('At Risk' if risk == 'Medium' else 'Delayed'),
             'projects': projects_list,
         }
-
 
 class TeamPerformanceAPIView(APIView):
     """
@@ -2383,10 +2406,8 @@ class ScheduleListCreateAPIView(ListCreateAPIView):
         if role_param:
             queryset = queryset.filter(assigned_role_id=role_param)
 
-
             
         return queryset.order_by('-created_at')
-
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -2395,6 +2416,4 @@ class ScheduleDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Schedule.objects.all()
     serializer_class = ScheduleSerializer
     permission_classes = [IsAuthenticated]
-
-
 

@@ -72,8 +72,8 @@ class IncomeStatementView(APIView):
         
         salaries = Salary.objects.filter(salary_q)
         other_expenses = OtherExpense.objects.filter(expense_q)
-        domains = ProjectDomain.objects.filter(domain_q)
-        servers = ProjectServer.objects.filter(domain_q)
+        domains = ProjectDomain.objects.filter(domain_q, accrued_by__iexact='Extechnology')
+        servers = ProjectServer.objects.filter(domain_q, accrued_by__iexact='Extechnology')
 
         # Optimized Salary Expense Calculation (Database-level)
         salary_expense = Salary.objects.filter(salary_q).aggregate(
@@ -135,8 +135,8 @@ class CashFlowStatementView(APIView):
             total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         
-        domains_paid = ProjectDomain.objects.filter(domain_q, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
-        servers_paid = ProjectServer.objects.filter(domain_q, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
+        domains_paid = ProjectDomain.objects.filter(domain_q, payment_status='PAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
+        servers_paid = ProjectServer.objects.filter(domain_q, payment_status='PAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
         
         total_cash_out = other_expenses + salary_out + domains_paid + servers_paid
         
@@ -220,13 +220,13 @@ class BalanceSheetView(APIView):
             total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         
-        domain_cost = ProjectDomain.objects.filter(payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
+        domain_cost = ProjectDomain.objects.filter(payment_status='PAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
         if end_date_str:
-             domain_cost = ProjectDomain.objects.filter(purchase_date__lte=end_date, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
+             domain_cost = ProjectDomain.objects.filter(purchase_date__lte=end_date, payment_status='PAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
              
-        server_cost = ProjectServer.objects.filter(payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
+        server_cost = ProjectServer.objects.filter(payment_status='PAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
         if end_date_str:
-             server_cost = ProjectServer.objects.filter(purchase_date__lte=end_date, payment_status='PAID').aggregate(total=Sum('cost'))['total'] or 0
+             server_cost = ProjectServer.objects.filter(purchase_date__lte=end_date, payment_status='PAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
 
         total_cash_out = other_exp + sals_paid + domain_cost + server_cost
         cash_on_hand = total_cash_in - total_cash_out
@@ -241,13 +241,13 @@ class BalanceSheetView(APIView):
             total=Coalesce(Sum(F('basic') + Coalesce(F('bonus'), Value(0, output_field=DecimalField())) - Coalesce(F('deductions'), Value(0, output_field=DecimalField()))), Value(0, output_field=DecimalField()))
         )['total'] or 0
         
-        unpaid_domains = ProjectDomain.objects.filter(payment_status='UNPAID').aggregate(total=Sum('cost'))['total'] or 0
+        unpaid_domains = ProjectDomain.objects.filter(payment_status='UNPAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
         if end_date_str:
-            unpaid_domains = ProjectDomain.objects.filter(purchase_date__lte=end_date, payment_status='UNPAID').aggregate(total=Sum('cost'))['total'] or 0
+            unpaid_domains = ProjectDomain.objects.filter(purchase_date__lte=end_date, payment_status='UNPAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
             
-        unpaid_servers = ProjectServer.objects.filter(payment_status='UNPAID').aggregate(total=Sum('cost'))['total'] or 0
+        unpaid_servers = ProjectServer.objects.filter(payment_status='UNPAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
         if end_date_str:
-            unpaid_servers = ProjectServer.objects.filter(purchase_date__lte=end_date, payment_status='UNPAID').aggregate(total=Sum('cost'))['total'] or 0
+            unpaid_servers = ProjectServer.objects.filter(purchase_date__lte=end_date, payment_status='UNPAID', accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0
             
         accounts_payable = unpaid_sals + unpaid_domains + unpaid_servers
 
@@ -439,9 +439,9 @@ class ProjectAnalyticalAPIView(APIView):
         payment_status_filter = request.query_params.get('payment_status', '').lower()
         if payment_status_filter:
             unpaid_q = (
-                Q(project_finances__total_balance_due__gt=0) |
-                Q(project_domains__payment_status='UNPAID') |
-                Q(project_servers__payment_status='UNPAID') |
+                Q(project_finances__payment_status='UNPAID') |
+                Q(project_domains__payment_status='UNPAID', project_domains__accrued_by__iexact='Extechnology') |
+                Q(project_servers__payment_status='UNPAID', project_servers__accrued_by__iexact='Extechnology') |
                 Q(services__payment_status='UNPAID')
             )
             if payment_status_filter == 'unpaid':
@@ -506,9 +506,9 @@ class ProjectAnalyticalAPIView(APIView):
             elif 'completed' in p_status or 'done' in p_status: completed_count += 1
             
             # Comprehensive Payment Status Check
-            is_unpaid = p.project_finances.filter(total_balance_due__gt=0).exists() or \
-                        p.project_domains.filter(payment_status__iexact='UNPAID').exists() or \
-                        p.project_servers.filter(payment_status__iexact='UNPAID').exists() or \
+            is_unpaid = p.project_finances.filter(payment_status='UNPAID').exists() or \
+                        p.project_domains.filter(accrued_by__iexact='Extechnology', payment_status__iexact='UNPAID').exists() or \
+                        p.project_servers.filter(accrued_by__iexact='Extechnology', payment_status__iexact='UNPAID').exists() or \
                         p.project_exbots.filter(payment_status__iexact='UNPAID').exists() or \
                         p.services.filter(payment_status__iexact='UNPAID').exists() or \
                         p.project_teams.filter(payment_status__iexact='UNPAID').exists()
@@ -535,16 +535,19 @@ class ProjectAnalyticalAPIView(APIView):
             t_paid = float(p.project_teams.filter(payment_status__iexact='PAID').aggregate(t=Sum('cost'))['t'] or 0.0)
             s_total = float(p.services.aggregate(s=Sum('cost'))['s'] or 0.0)
             s_paid = float(p.services.filter(payment_status__iexact='PAID').aggregate(s=Sum('cost'))['s'] or 0.0)
-            d_total = float(p.project_domains.aggregate(d=Sum('cost'))['d'] or 0.0)
-            d_paid = float(p.project_domains.filter(payment_status__iexact='PAID').aggregate(d=Sum('cost'))['d'] or 0.0)
-            srv_total = float(p.project_servers.aggregate(v=Sum('cost'))['v'] or 0.0)
-            srv_paid = float(p.project_servers.filter(payment_status__iexact='PAID').aggregate(v=Sum('cost'))['v'] or 0.0)
+            d_total = float(p.project_domains.filter(accrued_by__iexact='Extechnology').aggregate(d=Sum('cost'))['d'] or 0.0)
+            d_paid = float(p.project_domains.filter(accrued_by__iexact='Extechnology', payment_status__iexact='PAID').aggregate(d=Sum('cost'))['d'] or 0.0)
+            srv_total = float(p.project_servers.filter(accrued_by__iexact='Extechnology').aggregate(v=Sum('cost'))['v'] or 0.0)
+            srv_paid = float(p.project_servers.filter(accrued_by__iexact='Extechnology', payment_status__iexact='PAID').aggregate(v=Sum('cost'))['v'] or 0.0)
             ex_total = float(p.project_exbots.aggregate(e=Sum('plan_rate'))['e'] or 0.0)
             ex_paid = float(p.project_exbots.filter(payment_status__iexact='PAID').aggregate(e=Sum('plan_rate'))['e'] or 0.0)
             
-            p_total = t_total + s_total + d_total + srv_total + ex_total
-            p_paid = t_paid + s_paid + d_paid + srv_paid + ex_paid
-            total_ov_remaining_amount += (p_total - p_paid)
+            # Include project_finances in totals
+            f_total = float(p.project_finances.aggregate(f=Sum('project_cost'))['f'] or 0.0)
+            f_paid = float(p.project_finances.filter(payment_status__iexact='PAID').aggregate(f=Sum('project_cost'))['f'] or 0.0)
+            p_total = t_total + s_total + d_total + srv_total + ex_total + f_total
+            p_paid = t_paid + s_paid + d_paid + srv_paid + ex_paid + f_paid
+            total_ov_remaining_amount += p_total - p_paid
 
         overview_data = {
             "projects": {
@@ -588,18 +591,18 @@ class ProjectAnalyticalAPIView(APIView):
             
             # Domain Payment Status counts
             domains = project.project_domains.all()
-            paid_domains = domains.filter(payment_status__iexact='PAID').count()
-            unpaid_domains = domains.filter(payment_status__iexact='UNPAID').count()
-            total_domains = domains.count()
+            paid_domains = domains.filter(accrued_by__iexact='Extechnology', payment_status__iexact='PAID').count()
+            unpaid_domains = domains.filter(accrued_by__iexact='Extechnology', payment_status__iexact='UNPAID').count()
+            total_domains = domains.filter(accrued_by__iexact='Extechnology').count()
             domain_payment_str = "No Domain"
             if total_domains > 0:
                 domain_payment_str = "Paid" if paid_domains == total_domains else f"Unpaid ({paid_domains}/{total_domains} Paid)"
 
             # Server Payment Status counts
             servers = project.project_servers.all()
-            paid_servers = servers.filter(payment_status__iexact='PAID').count()
-            unpaid_servers = servers.filter(payment_status__iexact='UNPAID').count()
-            total_servers = servers.count()
+            paid_servers = servers.filter(accrued_by__iexact='Extechnology', payment_status__iexact='PAID').count()
+            unpaid_servers = servers.filter(accrued_by__iexact='Extechnology', payment_status__iexact='UNPAID').count()
+            total_servers = servers.filter(accrued_by__iexact='Extechnology').count()
             server_payment_str = "No Server"
             if total_servers > 0:
                 server_payment_str = "Paid" if paid_servers == total_servers else f"Unpaid ({paid_servers}/{total_servers} Paid)"
@@ -624,20 +627,28 @@ class ProjectAnalyticalAPIView(APIView):
             services_paid = float(p_srvs.filter(payment_status__iexact='PAID').aggregate(total=Sum('cost'))['total'] or 0.0)
             
             # 3. Domains
-            domains_total = float(domains.aggregate(total=Sum('cost'))['total'] or 0.0)
-            domains_paid = float(domains.filter(payment_status__iexact='PAID').aggregate(total=Sum('cost'))['total'] or 0.0)
+            domains_total = float(domains.filter(accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0.0)
+            domains_paid = float(domains.filter(accrued_by__iexact='Extechnology', payment_status__iexact='PAID').aggregate(total=Sum('cost'))['total'] or 0.0)
             
             # 4. Servers
-            servers_total = float(servers.aggregate(total=Sum('cost'))['total'] or 0.0)
-            servers_paid = float(servers.filter(payment_status__iexact='PAID').aggregate(total=Sum('cost'))['total'] or 0.0)
+            servers_total = float(servers.filter(accrued_by__iexact='Extechnology').aggregate(total=Sum('cost'))['total'] or 0.0)
+            servers_paid = float(servers.filter(accrued_by__iexact='Extechnology', payment_status__iexact='PAID').aggregate(total=Sum('cost'))['total'] or 0.0)
             
             # 5. Exbots
             exbots_total = float(exbots.aggregate(total=Sum('plan_rate'))['total'] or 0.0)
             exbots_paid = float(exbots.filter(payment_status__iexact='PAID').aggregate(total=Sum('plan_rate'))['total'] or 0.0)
             
-            # Final Totals
-            total_project_cost = teams_total + services_total + domains_total + servers_total + exbots_total
-            total_paid = teams_paid + services_paid + domains_paid + servers_paid + exbots_paid
+            # 6. Finances
+            p_finances = project.project_finances.all()
+            finances_total = float(p_finances.aggregate(total=Sum('project_cost'))['total'] or 0.0)
+            finances_paid = float(p_finances.filter(payment_status__iexact='PAID').aggregate(total=Sum('project_cost'))['total'] or 0.0)
+            total_finances = p_finances.count()
+            paid_finances = p_finances.filter(payment_status__iexact='PAID').count()
+            unpaid_finances = total_finances - paid_finances
+            
+            # Final Totals (now includes finances)
+            total_project_cost = teams_total + services_total + domains_total + servers_total + exbots_total + finances_total
+            total_paid = teams_paid + services_paid + domains_paid + servers_paid + exbots_paid + finances_paid
             balance_due = total_project_cost - total_paid
             
             domain_cost = domains_total
@@ -677,6 +688,7 @@ class ProjectAnalyticalAPIView(APIView):
                         "name": d.name,
                         "cost": float(d.cost or 0.0),
                         "payment_status": d.payment_status,
+                        "accrued_by": d.accrued_by,
                         "deadline": d.expiration_date.strftime('%Y-%m-%d') if d.expiration_date else None
                     } for d in domains
                 ],
@@ -690,6 +702,7 @@ class ProjectAnalyticalAPIView(APIView):
                         "name": s.name,
                         "cost": float(s.cost or 0.0),
                         "payment_status": s.payment_status,
+                        "accrued_by": s.accrued_by,
                         "deadline": s.expiration_date.strftime('%Y-%m-%d') if s.expiration_date else None
                     } for s in servers
                 ],
@@ -710,6 +723,11 @@ class ProjectAnalyticalAPIView(APIView):
                         "deadline": ex.plan_deactive_date.strftime('%Y-%m-%d') if ex.plan_deactive_date else None
                     } for ex in exbots
                 ],
+                
+                "finance": "Paid" if (paid_finances == total_finances and total_finances > 0) else ("No Finance" if total_finances == 0 else "Unpaid"),
+                "finance_total_cost": finances_total,
+                "finance_paid_cost": finances_paid,
+                "finance_unpaid_cost": finances_total - finances_paid,
             }
 
 
@@ -771,8 +789,18 @@ class ProjectAnalyticalAPIView(APIView):
                     "service_cost": float(service.cost or 0.0),
                 })
 
+            project_finances_data = []
+            for pf in project.project_finances.all():
+                project_finances_data.append({
+                    "id": pf.id,
+                    "project_cost": float(pf.project_cost or 0.0),
+                    "invoice_status": pf.invoice_status,
+                    "payment_status": pf.payment_status,
+                })
+
             project_result = {
                 "project_id": project.id,
+                "project_finances": project_finances_data,
                 "project_name": project_name,
                 "project_team_name": project_team_names or "No Team",
                 "project_team_status": pt_status,
@@ -798,6 +826,9 @@ class ProjectAnalyticalAPIView(APIView):
                 "exbot_count": total_exbots,
                 "paid_exbot_count": paid_exbots,
                 "unpaid_exbot_count": unpaid_exbots,
+                "finance_count": total_finances,
+                "paid_finance_count": paid_finances,
+                "unpaid_finance_count": unpaid_finances,
                 "server_name": servers.first().name if servers.exists() else "No Server",
                 "domain_name": domains.first().name if domains.exists() else "No Domain",
                 "exbot_name": exbots.first().whatsapp_number if exbots.exists() else "No Bot",

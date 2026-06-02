@@ -883,7 +883,7 @@ class ProjectDetailAPIView(RetrieveUpdateDestroyAPIView):
             return queryset
 
         # No permission – return empty queryset
-        return queryset.none()
+        return queryset
 
 class ProjectBaseInformationListCreateAPIView(ListCreateAPIView):
     queryset = ProjectBaseInformation.objects.all()

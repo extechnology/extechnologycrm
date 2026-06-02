@@ -787,7 +787,26 @@ class ProjectListCreateAPIView(ListCreateAPIView):
     search_fields = ['name', 'description', 'status', 'project_nature__name', 'project_clients__company_name', 'project_business_addresses__legal_name', 'project_base_informations__name']
 
     def get_queryset(self):
-        queryset = Project.objects.all().order_by('-created_at')
+        user = self.request.user
+        queryset = Project.objects.all()
+
+        if user.is_superuser or user.has_role('SuperAdmin'):
+            pass
+        elif user.has_perm('djangosimplemissionapp.all_projectservicemember') or \
+             user.has_perm('djangosimplemissionapp.all_projectteammember'):
+            pass
+        elif user.has_perm('djangosimplemissionapp.own_projectservicemember') or \
+             user.has_perm('djangosimplemissionapp.own_projectteammember'):
+            queryset = queryset.filter(
+                Q(services__members__employee=user) |
+                Q(project_team_members__employee=user)
+            ).distinct()
+        elif user.has_perm('djangosimplemissionapp.view_project'):
+            pass
+        else:
+            queryset = queryset.none()
+
+        queryset = queryset.order_by('-created_at')
         
         status = self.request.query_params.get('status')
         if status:
@@ -860,30 +879,25 @@ class ProjectDetailAPIView(RetrieveUpdateDestroyAPIView):
         user = self.request.user
         queryset = super().get_queryset()
 
-        # Superusers / admin roles see everything
-        if user.is_superuser or user.has_role('SuperAdmin') or user.has_role('Admin'):
+        if user.is_superuser or user.has_role('SuperAdmin'):
             return queryset
 
-        # Users with explicit "all" permissions can see all projects
         if user.has_perm('djangosimplemissionapp.all_projectservicemember') or \
            user.has_perm('djangosimplemissionapp.all_projectteammember'):
             return queryset
 
-        # Users with "own" permissions only see projects they are assigned to via services or team members
         if user.has_perm('djangosimplemissionapp.own_projectservicemember') or \
            user.has_perm('djangosimplemissionapp.own_projectteammember'):
-            from django.db.models import Q
             return queryset.filter(
                 Q(services__members__employee=user) |
                 Q(project_team_members__employee=user)
             ).distinct()
 
-        # Fallback: if the user has a generic view permission for Project, allow access
         if user.has_perm('djangosimplemissionapp.view_project'):
             return queryset
 
-        # No permission – return empty queryset
-        return queryset
+        return queryset.none()
+
 
 class ProjectBaseInformationListCreateAPIView(ListCreateAPIView):
     queryset = ProjectBaseInformation.objects.all()

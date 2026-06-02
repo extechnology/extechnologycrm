@@ -1168,50 +1168,6 @@ class ProjectSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
 
-    def to_representation(self, instance):
-        ret = super().to_representation(instance)
-        request = self.context.get('request')
-        if not request or not request.user:
-            return ret
-            
-        user = request.user
-        if user.is_superuser or user.has_role('SuperAdmin') or user.has_role('Admin'):
-            return ret
-            
-        can_view_all_team = user.has_perm('djangosimplemissionapp.all_projectteammember')
-        can_view_own_team = user.has_perm('djangosimplemissionapp.own_projectteammember')
-        
-        can_view_all_service = user.has_perm('djangosimplemissionapp.all_projectservicemember')
-        can_view_own_service = user.has_perm('djangosimplemissionapp.own_projectservicemember')
-        
-        if not can_view_all_team:
-            if can_view_own_team:
-                ret['project_team_members'] = [
-                    m for m in ret.get('project_team_members', []) 
-                    if m.get('employee') == user.id
-                ]
-                for team in ret.get('project_teams', []):
-                    team['members'] = [
-                        m for m in team.get('members', []) 
-                        if m.get('employee') == user.id
-                    ]
-            else:
-                ret['project_team_members'] = []
-                for team in ret.get('project_teams', []):
-                    team['members'] = []
-                    
-        if not can_view_all_service:
-            if can_view_own_service:
-                for service in ret.get('services', []):
-                    service['members'] = [
-                        m for m in service.get('members', []) 
-                        if m.get('employee') == user.id
-                    ]
-            else:
-                for service in ret.get('services', []):
-                    service['members'] = []
-                    
-        return ret
 
     # ── Helper ──────────────────────────────────────────────────
 

@@ -97,16 +97,16 @@ WSGI_APPLICATION = 'djangosimplemission.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'fqtrwvzi_EXCRM_DATABASE',
-#         'USER': 'fqtrwvzi_exshamil',
-#         'PASSWORD': 'shamil@123',
-#         'HOST': 'localhost',   # Or your DB host
-#         'PORT': '3306',        # Default MySQL port
-#     }
-# }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'fqtrwvzi_EXCRM_DATABASE',
+        'USER': 'fqtrwvzi_exshamil',
+        'PASSWORD': 'shamil@123',
+        'HOST': 'localhost',   # Or your DB host
+        'PORT': '3306',        # Default MySQL port
+    }
+}
 # DATABASES = { 
 #     'default': {
 #         'ENGINE': 'django.db.backends.mysql',
@@ -117,12 +117,14 @@ WSGI_APPLICATION = 'djangosimplemission.wsgi.application'
 #         'PORT': config('DB_PORT', default='3306'),
 #     }
 # }
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
 
 
 # Password validation

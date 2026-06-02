@@ -8,7 +8,7 @@ from .models import (
     ProjectService, EmployeeDailyActivity, ActivityLog, Invoice,
     InvoiceItem, Payment, ActivityExceedComment, Notification,
     EmployeeLeave, Company, CompanyProfile, Salary, Attendance,
-    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot, Lead, FollowUp
+    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot, Lead, FollowUp, SystemAuditLog
 )
 
 # Custom UserAdmin to handle the custom User model
@@ -80,3 +80,15 @@ class LeadAdmin(admin.ModelAdmin):
 class FollowUpAdmin(admin.ModelAdmin):
     list_display = ('lead', 'followup_date', 'interest_level', 'conversion_status', 'created_at')
     list_filter = ('followup_date', 'interest_level', 'conversion_status')
+
+@admin.register(SystemAuditLog)
+class SystemAuditLogAdmin(admin.ModelAdmin):
+    list_display = ('action', 'target', 'performed_by', 'created_at')
+    search_fields = ('action', 'target', 'performed_by')
+    list_filter = ('action', 'created_at')
+    
+    def has_add_permission(self, request):
+        return False
+        
+    def has_change_permission(self, request, obj=None):
+        return False

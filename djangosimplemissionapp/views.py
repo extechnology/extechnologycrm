@@ -13,7 +13,7 @@ from .models import (
     Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,ProjectServiceMember,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,ProjectDocument,
-    ClientAdvance, UserSalary,ProjectExbot,Lead,FollowUp,Schedule
+    ClientAdvance, UserSalary,ProjectExbot,Lead,FollowUp,Schedule,SystemAuditLog
 )
   
 from .serializers import (
@@ -177,6 +177,13 @@ class UserDetailAPIView(views.APIView):
             return Response({'error': 'Permission denied. Only SuperAdmin can delete users.'}, status=status.HTTP_403_FORBIDDEN)
 
         user = self.get_object(pk)
+        
+        SystemAuditLog.objects.create(
+            action="USER_DELETED",
+            performed_by=f"{request.user.username} (ID: {request.user.id})",
+            target=f"{user.username} (ID: {user.id})"
+        )
+        
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

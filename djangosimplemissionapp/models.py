@@ -1663,3 +1663,17 @@ class Schedule(models.Model):
 
     def __str__(self):
         return f"{self.title} - {self.schedule_date} {self.schedule_time}"
+
+class SystemAuditLog(models.Model):
+    action = models.CharField(max_length=100)
+    performed_by = models.CharField(max_length=255)
+    target = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "System Audit Log"
+        verbose_name_plural = "System Audit Logs"
+
+    def __str__(self):
+        return f"{self.action} on {self.target} by {self.performed_by}"

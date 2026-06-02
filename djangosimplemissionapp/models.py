@@ -79,6 +79,8 @@ class User(AbstractUser):
             ("view_own_employee_performance", "Can view own employee performance"),
             ("view_all_leads", "Can view all leads"),
             ("view_own_leads", "Can view own leads"),
+            ("viewall_user", "Can view all user details"),
+            ("viewown_user", "Can view own user details"),
         ]
 
     def __str__(self):
@@ -425,7 +427,10 @@ class Team(models.Model):
             ("view_teamperformance", "Can view team performance analytics"),
             ("view_all_team_performance", "Can view performance of all teams"),
             ("view_own_team_performance", "Can view performance of own team only"),
+            ("viewown_team", "Can view own team details "),
+            ("viewall_team", "Can view all team details"),
         ]
+
 
 class ProjectTeam(models.Model):
     STATUS_CHOICES = [
@@ -544,7 +549,15 @@ class ProjectTeamMember(models.Model):
     def __str__(self):
         return f"{self.employee.username} - {self.role}"
 
+    class Meta: 
+        permissions = [
+            ("all_projectteammember", "Can view all project team members"),
+            ("own_projectteammember", "Can view own project team member assignments"),
+        ]
+
+
 class ProjectService(models.Model):
+
     STATUS_CHOICES = [
         ('Pending', 'Pending'),
         ('Progressing', 'Progressing'),
@@ -652,7 +665,15 @@ class ProjectServiceMember(models.Model):
     notes = models.TextField(blank=True, null=True)
 
     def __str__(self):
-        return f"{self.employee.username} - {self.service.name}"                
+        return f"{self.employee.username} - {self.service.name}"
+
+    class Meta:
+        permissions = [
+            ("all_projectservicemember", "Can view all project service members"),
+            ("own_projectservicemember", "Can view own project service member assignments"),
+        ]
+
+
 
 class EmployeeDailyActivity(models.Model):
     employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='daily_activities')

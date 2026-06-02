@@ -1,3 +1,5 @@
+from urllib import request
+
 from django.contrib.auth.models import Permission
 from rest_framework import views, viewsets, filters
 from rest_framework.response import Response
@@ -56,7 +58,9 @@ class UserListAPIView(views.APIView):
                         request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
                         request.user.has_perm('djangosimplemissionapp.view_all_leads') or \
                         request.user.has_perm('djangosimplemissionapp.view_own_leads') or \
-                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance')
+                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance') or \
+                        request.user.has_perm('djangosimplemissionapp.viewall_user') 
+        
         
         if is_privileged:
             users = User.objects.all()
@@ -146,7 +150,8 @@ class UserDetailAPIView(views.APIView):
         is_privileged = any(role.upper() in ['SUPERADMIN', 'ADMIN', 'BILLING'] for role in request.user.role_names) or \
                         request.user.has_perm('djangosimplemissionapp.view_all_employee_performance') or \
                         request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
-                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance')
+                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance') or \
+                        request.user.has_perm('djangosimplemissionapp.viewall_user')
         
         if not is_privileged and request.user.id != user.id:
              return Response({'error': 'Permission denied. You can only view your own profile.'}, status=status.HTTP_403_FORBIDDEN)
@@ -723,12 +728,18 @@ class ProjectFinanceDetailAPIView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]          
 
 class TeamListCreateAPIView(ListCreateAPIView):
-    queryset = Team.objects.all()
     serializer_class = TeamSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'team_lead__username']
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.has_role('SuperAdmin') and not user.has_role('Admin'):
+            if not user.has_perm('djangosimplemissionapp.viewall_team ') and user.has_perm('djangosimplemissionapp.viewown_team'):
+                return Team.objects.filter(members=user)
+        return Team.objects.all()
 
 class TeamDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Team.objects.all()
@@ -838,6 +849,25 @@ class ProjectDetailAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        user = self.request.user
+        queryset = super().get_queryset()
+
+        if user.is_superuser or user.has_role('SuperAdmin') or user.has_role('Admin'):
+            return queryset
+            
+        if user.has_perm('djangosimplemissionapp.all_projectservicemember') or user.has_perm('djangosimplemissionapp.all_projectteammember'):
+            return queryset
+
+        if user.has_perm('djangosimplemissionapp.own_projectservicemember') or user.has_perm('djangosimplemissionapp.own_projectteammember'):
+            from django.db.models import Q
+            return queryset.filter(
+                Q(services__members__employee=user) |
+                Q(project_team_members__employee=user)
+            ).distinct()
+            
+        return queryset.none()
+
 class ProjectBaseInformationListCreateAPIView(ListCreateAPIView):
     queryset = ProjectBaseInformation.objects.all()
     serializer_class = ProjectBaseInformationSerializer
@@ -872,10 +902,40 @@ class ProjectTeamMemberListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['employee__username', 'role', 'status']
 
+    def get_queryset(self):
+        user = self.request.user
+        queryset = super().get_queryset()
+
+        if user.is_superuser or user.has_role('SuperAdmin') or user.has_role('Admin'):
+            return queryset
+            
+        if user.has_perm('djangosimplemissionapp.all_projectteammember'):
+            return queryset
+
+        if user.has_perm('djangosimplemissionapp.own_projectteammember'):
+            return queryset.filter(employee=user)
+            
+        return queryset.none()
+
 class ProjectTeamMemberDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ProjectTeamMember.objects.all()
     serializer_class = ProjectTeamMemberSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = super().get_queryset()
+
+        if user.is_superuser or user.has_role('SuperAdmin') or user.has_role('Admin'):
+            return queryset
+            
+        if user.has_perm('djangosimplemissionapp.all_projectteammember'):
+            return queryset
+
+        if user.has_perm('djangosimplemissionapp.own_projectteammember'):
+            return queryset.filter(employee=user)
+            
+        return queryset.none()
 
 class ProjectServiceListCreateAPIView(ListCreateAPIView):
     queryset = ProjectService.objects.all()
@@ -983,13 +1043,56 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
             response["Access-Control-Allow-Headers"] = "*"
             return response
 
+        # --- SUMMARY LOGIC ---
+        # Get the latest activity for each unique assignment (employee + project + service)
+        # Since queryset is ordered by -date, -created_at, the first one we see is the latest.
+        latest_activities = {}
+        for obj in queryset:
+            key = (obj.employee_id, obj.project_id, obj.project_service_id)
+            if key not in latest_activities:
+                latest_activities[key] = obj
+                
+        temp_serializer = self.get_serializer()
+        
+        total_allocated_days = 0
+        total_remaining_days = 0
+        total_overdue_days = 0
+        total_used_days = 0
+        
+        for obj in latest_activities.values():
+            total_allocated_days += temp_serializer.get_allocateddays(obj)
+            total_remaining_days += temp_serializer.get_remainingdays(obj)
+            total_overdue_days += temp_serializer.get_overdue_days(obj)
+            total_used_days += temp_serializer.get_totaluseddays(obj)
+        
+        summary = {
+            "total_allocated_days": total_allocated_days,
+            "total_remaining_days": total_remaining_days,
+            "total_overdue_days": total_overdue_days,
+            "total_used_days": total_used_days,
+        }
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+            response = self.get_paginated_response(serializer.data)
+            
+            from collections import OrderedDict
+            new_data = OrderedDict()
+            new_data['count'] = response.data.get('count')
+            new_data['next'] = response.data.get('next')
+            new_data['previous'] = response.data.get('previous')
+            new_data['summary'] = summary
+            new_data['results'] = response.data.get('results')
+            response.data = new_data
+            
+            return response
 
         serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+        return Response({
+            'summary': summary,
+            'results': serializer.data
+        })
 
 class EmployeeSpecificActivityListAPIView(APIView):
     permission_classes = [IsAuthenticated]

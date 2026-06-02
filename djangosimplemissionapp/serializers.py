@@ -427,15 +427,210 @@ class EmployeeDailyActivitySerializer(serializers.ModelSerializer):
     project_name = serializers.ReadOnlyField(source='project.name')
     project_service_name = serializers.ReadOnlyField(source='project_service.name')
     comment_count = serializers.SerializerMethodField()
+    overdue_days = serializers.SerializerMethodField()
+    is_overdue = serializers.SerializerMethodField()
+    projectstarteddate = serializers.SerializerMethodField()
+    projectenddate = serializers.SerializerMethodField()
+    servicestartdate = serializers.SerializerMethodField()
+    allocateddays = serializers.SerializerMethodField()
+    remainingdays = serializers.SerializerMethodField()
+    totaluseddays = serializers.SerializerMethodField()
+
+   
     
     class Meta:
         model = EmployeeDailyActivity
-        fields = '__all__'
+        fields = [
+            field.name for field in EmployeeDailyActivity._meta.fields
+        ] + [
+            'employee_name',
+            'team_name',
+            'project_name',
+            'project_service_name',
+            'comment_count',
+            'overdue_days',
+            'is_overdue',
+            'projectstarteddate',
+            'projectenddate',
+            'servicestartdate',
+            'allocateddays',
+            'remainingdays',
+            'totaluseddays',
+        ]
         read_only_fields = ['target_work_percentage']
 
     def get_comment_count(self, obj):
         return obj.exceed_comments.count()
+    
+    def get_totaluseddays(self, obj):
+        start_date = self.get_projectstarteddate(obj)
 
+        if obj.project_service:
+            start_date = self.get_servicestartdate(obj)
+
+        if not start_date or not obj.date:
+            return 0
+
+        obj_date = obj.date.date() if hasattr(obj.date, 'date') else obj.date
+        s_date = start_date.date() if hasattr(start_date, 'date') else start_date
+
+        return (obj_date - s_date).days + 1
+
+    
+    def get_overdue_days(self, obj):
+        # Cache the result on the instance to prevent running this logic twice per row
+        if hasattr(obj, '_cached_overdue_days'):
+            return obj._cached_overdue_days
+
+        start_date = None
+        allocated_days = 0
+
+        # 1. Project Service logic
+        if obj.project_service:
+            from .models import ProjectServiceMember
+
+            assignment = ProjectServiceMember.objects.filter(
+                service=obj.project_service,
+                employee=obj.employee,
+                allocated_days__gt=0
+            ).order_by('-id').first()
+
+            if assignment and assignment.start_date:
+                start_date = assignment.start_date
+                allocated_days = assignment.allocated_days
+
+        # 2. Project logic
+        elif obj.project:
+            from .models import ProjectTeamMember, ProjectTeam
+
+            assignment = ProjectTeamMember.objects.filter(
+                project=obj.project,
+                employee=obj.employee,
+                allocated_days__gt=0
+            ).order_by('-id').first()
+
+            if not assignment:
+                assignment = ProjectTeamMember.objects.filter(
+                    project_allocations__project=obj.project,
+                    employee=obj.employee,
+                    allocated_days__gt=0
+                ).order_by('-id').first()
+
+            if assignment and assignment.start_date:
+                start_date = assignment.start_date
+                allocated_days = assignment.allocated_days
+
+            if not start_date:
+                team = ProjectTeam.objects.filter(
+                    project=obj.project,
+                    members__employee=obj.employee
+                ).order_by('-id').first()
+
+                if team and team.start_date:
+                    start_date = team.start_date
+                    end = team.deadline or team.end_date
+
+                    if end and end > start_date:
+                        allocated_days = (end - start_date).days + 1
+
+        # 3. Calculate overdue math safely
+        if not start_date or allocated_days <= 0 or not obj.date:
+            obj._cached_overdue_days = 0
+            return 0
+
+        # Handles edge cases if obj.date or start_date are different types (datetime vs date)
+        obj_date = obj.date.date() if hasattr(obj.date, 'date') else obj.date
+        s_date = start_date.date() if hasattr(start_date, 'date') else start_date
+
+        elapsed_days = (obj_date - s_date).days + 1
+        obj._cached_overdue_days = max(elapsed_days - allocated_days, 0)
+
+        return obj._cached_overdue_days
+
+    def get_is_overdue(self, obj):
+        # This will now use the cached value instantly without querying the database again
+        return self.get_overdue_days(obj) > 0
+
+    def get_projectstarteddate(self, obj):
+        """Get the project start date from ProjectTeamMember assignment"""
+        if obj.project:
+            from .models import ProjectTeamMember
+            # Get the ProjectTeamMember assignment directly
+            assignment = ProjectTeamMember.objects.filter(
+                project=obj.project,
+                employee=obj.employee
+            ).order_by('-id').first()
+            if assignment and assignment.start_date:
+                return assignment.start_date
+        return None
+
+    def get_projectenddate(self, obj):
+        """Get the project end date from ProjectTeamMember assignment"""
+        if obj.project:
+            from .models import ProjectTeamMember
+            # Get the ProjectTeamMember assignment directly
+            assignment = ProjectTeamMember.objects.filter(
+                project=obj.project,
+                employee=obj.employee
+            ).order_by('-id').first()
+            if assignment and assignment.end_date:
+                return assignment.end_date
+        return None
+
+    def get_servicestartdate(self, obj):
+        """Get the service start date"""
+        if obj.project_service:
+            from .models import ProjectServiceMember
+            assignment = ProjectServiceMember.objects.filter(
+                service=obj.project_service,
+                employee=obj.employee,
+                allocated_days__gt=0
+            ).order_by('-id').first()
+            if assignment and assignment.start_date:
+                return assignment.start_date
+        return None
+
+    def get_allocateddays(self, obj):
+        """Get the total allocated days from ProjectTeamMember assignment"""
+        if obj.project_service:
+            from .models import ProjectServiceMember
+            assignment = ProjectServiceMember.objects.filter(
+                service=obj.project_service,
+                employee=obj.employee
+            ).order_by('-id').first()
+            if assignment:
+                return assignment.allocated_days
+        elif obj.project:
+            from .models import ProjectTeamMember
+            # Get allocated_days directly from ProjectTeamMember
+            assignment = ProjectTeamMember.objects.filter(
+                project=obj.project,
+                employee=obj.employee
+            ).order_by('-id').first()
+            if assignment:
+                return assignment.allocated_days
+        return 0
+
+    def get_remainingdays(self, obj):
+        """Get the remaining days for the allocation (allocated - elapsed)"""
+        allocated = self.get_allocateddays(obj)
+        
+        # Get start date from project or service
+        start_date = None
+        if obj.project:
+            start_date = self.get_projectstarteddate(obj)
+        elif obj.project_service:
+            start_date = self.get_servicestartdate(obj)
+        
+        if not start_date or allocated <= 0 or not obj.date:
+            return 0
+        
+        obj_date = obj.date.date() if hasattr(obj.date, 'date') else obj.date
+        s_date = start_date.date() if hasattr(start_date, 'date') else start_date
+        elapsed_days = (obj_date - s_date).days + 1
+        return max(allocated - elapsed_days, 0)
+
+    
     def _calculate_target(self, validated_data):
         employee = validated_data.get('employee')
         project_service = validated_data.get('project_service')
@@ -972,6 +1167,51 @@ class ProjectSerializer(serializers.ModelSerializer):
             'project_teams', 'project_team_members', 'services', 'project_documents', 'project_exbots',
         ]
         extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        request = self.context.get('request')
+        if not request or not request.user:
+            return ret
+            
+        user = request.user
+        if user.is_superuser or user.has_role('SuperAdmin') or user.has_role('Admin'):
+            return ret
+            
+        can_view_all_team = user.has_perm('djangosimplemissionapp.all_projectteammember')
+        can_view_own_team = user.has_perm('djangosimplemissionapp.own_projectteammember')
+        
+        can_view_all_service = user.has_perm('djangosimplemissionapp.all_projectservicemember')
+        can_view_own_service = user.has_perm('djangosimplemissionapp.own_projectservicemember')
+        
+        if not can_view_all_team:
+            if can_view_own_team:
+                ret['project_team_members'] = [
+                    m for m in ret.get('project_team_members', []) 
+                    if m.get('employee') == user.id
+                ]
+                for team in ret.get('project_teams', []):
+                    team['members'] = [
+                        m for m in team.get('members', []) 
+                        if m.get('employee') == user.id
+                    ]
+            else:
+                ret['project_team_members'] = []
+                for team in ret.get('project_teams', []):
+                    team['members'] = []
+                    
+        if not can_view_all_service:
+            if can_view_own_service:
+                for service in ret.get('services', []):
+                    service['members'] = [
+                        m for m in service.get('members', []) 
+                        if m.get('employee') == user.id
+                    ]
+            else:
+                for service in ret.get('services', []):
+                    service['members'] = []
+                    
+        return ret
 
     # ── Helper ──────────────────────────────────────────────────
 

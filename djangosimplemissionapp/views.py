@@ -893,7 +893,9 @@ class ProjectDetailAPIView(RetrieveUpdateDestroyAPIView):
                 Q(project_team_members__employee=user)
             ).distinct()
 
-        if user.has_perm('djangosimplemissionapp.view_project'):
+        if user.has_perm('djangosimplemissionapp.view_project') or \
+           user.has_perm('djangosimplemissionapp.viewnameonly_projectdomain') or \
+           user.has_perm('djangosimplemissionapp.viewnameonly_projectserver'):
             return queryset
 
         return queryset.none()
@@ -1953,34 +1955,46 @@ class EmployeePerformanceAPIView(APIView):
 
         project_team_data = []
         for m in project_team_memberships:
-            t_score = get_target_score(m.start_date, current_date, m.allocated_days)
+            # Calculate elapsed days from start_date to current_date
+            days_used = (current_date - m.start_date).days if m.start_date else 0
+            days_remaining = max(0, m.allocated_days - days_used)
+            usage_percentage = round((days_used / m.allocated_days * 100), 2) if m.allocated_days > 0 else 0
             project_team_data.append({
                 'project_name': m.project.name if m.project else 'Unknown Project',
                 'status': m.status,
                 'start_date': m.start_date,
-                'allocated_days': m.allocated_days,
+                'allocation': m.allocated_days,
+                'days_used': days_used,
+                'days_remaining': days_remaining,
+                'usage_percentage': usage_percentage,
                 'current_date': current_date,
                 'end_date': m.end_date,
                 'note': m.notes,
-                'target_score': t_score,
-                'is_over_allocated': t_score > 100,
+                'is_over_allocated': days_used > m.allocated_days,
+                'is_complete': m.status == 'Completed',
             })
             
         service_team_data = []
         for m in service_team_memberships:
-            t_score = get_target_score(m.start_date, current_date, m.allocated_days)
             p_name = m.service.project.name if m.service and m.service.project else 'Independent Service'
             s_name = m.service.name if m.service else 'Unknown Service'
+            # Calculate elapsed days from start_date to current_date
+            days_used = (current_date - m.start_date).days if m.start_date else 0
+            days_remaining = max(0, m.allocated_days - days_used)
+            usage_percentage = round((days_used / m.allocated_days * 100), 2) if m.allocated_days > 0 else 0
             service_team_data.append({
                 'service_name': f"{p_name} -> {s_name}",
                 'status': m.status,
                 'start_date': m.start_date,
-                'allocated_days': m.allocated_days,
+                'allocation': m.allocated_days,
+                'days_used': days_used,
+                'days_remaining': days_remaining,
+                'usage_percentage': usage_percentage,
                 'current_date': current_date,
                 'end_date': m.end_date,
                 'note': m.notes,
-                'target_score': t_score,
-                'is_over_allocated': t_score > 100,
+                'is_over_allocated': days_used > m.allocated_days,
+                'is_complete': m.status == 'Completed',
             })
 
         pending_count = 0

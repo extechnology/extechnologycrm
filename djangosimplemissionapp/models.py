@@ -291,6 +291,8 @@ class ProjectDomain(models.Model):
     class Meta:
         permissions = [
             ("view_domain_stats", "Can view domain analytics and stats"),
+            ("viewnameonly_projectdomain", "can view "),
+
         ]
 
 class ProjectServer(models.Model):
@@ -346,6 +348,8 @@ class ProjectServer(models.Model):
     class Meta:
         permissions = [
             ("view_server_stats", "Can view server analytics and stats"),
+            ("viewnameonly_projectserver", "can view "),
+
         ]
 
 class ProjectExbot(models.Model):
@@ -553,6 +557,7 @@ class ProjectTeamMember(models.Model):
         permissions = [
             ("all_projectteammember", "Can view all project team members"),
             ("own_projectteammember", "Can view own project team member assignments"),
+            ("alldate_projectteammember", "Can view all project team member dates")
         ]
 
 
@@ -671,6 +676,8 @@ class ProjectServiceMember(models.Model):
         permissions = [
             ("all_projectservicemember", "Can view all project service members"),
             ("own_projectservicemember", "Can view own project service member assignments"),
+            ("alldate_projectservicemember", "Can view all project service member dates")
+
         ]
 
 

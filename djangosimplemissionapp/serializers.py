@@ -322,6 +322,24 @@ class ProjectDomainSerializer(serializers.ModelSerializer):
                 instance.provider.add(provider)
         return instance
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                has_full_view = user.has_perm('djangosimplemissionapp.view_projectdomain')
+                if user.has_perm('djangosimplemissionapp.viewnameonly_projectdomain') and not has_full_view:
+                    allowed_fields = {'id', 'name', 'purchased_from'}
+                    for field in list(representation.keys()):
+                        if field not in allowed_fields:
+                            representation.pop(field, None)
+        return representation
+
 
 class ProjectServerSerializer(serializers.ModelSerializer):
     provider = DomainOrServerThirdPartyServiceProviderSerializer(many=True, required=False)
@@ -353,6 +371,24 @@ class ProjectServerSerializer(serializers.ModelSerializer):
                 provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
                 instance.provider.add(provider)
         return instance
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                has_full_view = user.has_perm('djangosimplemissionapp.view_projectserver')
+                if user.has_perm('djangosimplemissionapp.viewnameonly_projectserver') and not has_full_view:
+                    allowed_fields = {'id', 'name', 'purchased_from'}
+                    for field in list(representation.keys()):
+                        if field not in allowed_fields:
+                            representation.pop(field, None)
+        return representation
 
 class ProjectExbotSerializer(serializers.ModelSerializer):
     project_name = serializers.ReadOnlyField(source='project.name')
@@ -408,6 +444,25 @@ class ProjectTeamMemberSerializer(serializers.ModelSerializer):
         model = ProjectTeamMember
         fields = '__all__'
         extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                # If they don't have 'alldate' permission, and they are looking at someone else's record, strip dates.
+                if instance.employee_id != user.id and not user.has_perm('djangosimplemissionapp.alldate_projectteammember'):
+                    representation.pop('start_date', None)
+                    representation.pop('end_date', None)
+                    representation.pop('allocated_days', None)
+                    representation.pop('actual_days_spent', None)
+                    representation.pop('cost', None)
+        return representation
 
 class ProjectDocumentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -1006,6 +1061,29 @@ class ProjectTeamSerializer(serializers.ModelSerializer):
                 instance.members.add(member)
         return instance
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if 'members' in representation:
+                    has_member_perm = (
+                        user.has_perm('djangosimplemissionapp.view_projectteammember') or
+                        user.has_perm('djangosimplemissionapp.all_projectteammember') or
+                        user.has_perm('djangosimplemissionapp.own_projectteammember')
+                    )
+                    if not has_member_perm:
+                        representation.pop('members', None)
+                    elif not (user.has_perm('djangosimplemissionapp.view_projectteammember') or user.has_perm('djangosimplemissionapp.all_projectteammember')):
+                        # Filter to only the user's own team members
+                        representation['members'] = [m for m in representation.get('members', []) if m.get('employee') == user.id]
+        return representation
+
 
 class ProjectServiceTeamSerializer(serializers.ModelSerializer):
     team_detail = TeamSerializer(source='team', read_only=True)
@@ -1036,6 +1114,24 @@ class ProjectServiceMemberSerializer(serializers.ModelSerializer):
             'id': {'read_only': False, 'required': False, 'allow_null': True},
             'service': {'required': False, 'allow_null': True},
         }
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if instance.employee_id != user.id and not user.has_perm('djangosimplemissionapp.alldate_projectservicemember'):
+                    representation.pop('start_date', None)
+                    representation.pop('end_date', None)
+                    representation.pop('allocated_days', None)
+                    representation.pop('actual_days', None)
+                    representation.pop('cost', None)
+        return representation
 
 
 class ProjectServiceSerializer(serializers.ModelSerializer):
@@ -1086,6 +1182,32 @@ class ProjectServiceSerializer(serializers.ModelSerializer):
                 m_data.pop('service', None)
                 ProjectServiceMember.objects.create(service=instance, **m_data)
         return instance
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if 'members' in representation:
+                    has_member_perm = (
+                        user.has_perm('djangosimplemissionapp.view_projectservicemember') or
+                        user.has_perm('djangosimplemissionapp.all_projectservicemember') or
+                        user.has_perm('djangosimplemissionapp.own_projectservicemember')
+                    )
+                    if not has_member_perm:
+                        representation.pop('members', None)
+                    elif not (user.has_perm('djangosimplemissionapp.view_projectservicemember') or user.has_perm('djangosimplemissionapp.all_projectservicemember')):
+                        # Filter to only the user's own service members
+                        representation['members'] = [m for m in representation.get('members', []) if m.get('employee') == user.id]
+                if 'teams' in representation:
+                    if not user.has_perm('djangosimplemissionapp.view_projectserviceteam') and not user.has_perm('djangosimplemissionapp.view_projectservice'):
+                        representation.pop('teams', None)
+        return representation
 
 
 class ProjectSummarySerializer(serializers.ModelSerializer):
@@ -1443,6 +1565,68 @@ class ProjectSerializer(serializers.ModelSerializer):
                     ProjectServiceMember.objects.create(service=svc, **sm_data)
 
         return instance
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                permissions_map = {
+                    'project_nature': 'djangosimplemissionapp.view_projectnature',
+                    'project_nature_detail': 'djangosimplemissionapp.view_projectnature',
+                    'project_business_addresses': 'djangosimplemissionapp.view_projectbusinessaddress',
+                    'project_base_informations': 'djangosimplemissionapp.view_projectbaseinformation',
+                    'project_excutions': 'djangosimplemissionapp.view_projectexcution',
+                    'project_finances': 'djangosimplemissionapp.view_projectfinance',
+                    'project_domains': 'djangosimplemissionapp.view_projectdomain',
+                    'project_servers': 'djangosimplemissionapp.view_projectserver',
+                    'project_clients': 'djangosimplemissionapp.view_projectclient',
+                    'project_teams': 'djangosimplemissionapp.view_projectteam',
+                    'project_team_members': 'djangosimplemissionapp.view_projectteammember',
+                    'services': 'djangosimplemissionapp.view_projectservice',
+                    'project_documents': 'djangosimplemissionapp.view_projectdocument',
+                    'project_exbots': 'djangosimplemissionapp.view_projectexbot',
+                }
+                
+                for field, permission in permissions_map.items():
+                    if field in representation:
+                        if field == 'project_team_members':
+                            has_permission = (
+                                user.has_perm(permission) or 
+                                user.has_perm('djangosimplemissionapp.all_projectteammember') or 
+                                user.has_perm('djangosimplemissionapp.own_projectteammember')
+                            )
+                            if has_permission and not (user.has_perm(permission) or user.has_perm('djangosimplemissionapp.all_projectteammember')):
+                                # Filter to only the user's own team members
+                                if field in representation and isinstance(representation[field], list):
+                                    representation[field] = [m for m in representation[field] if m.get('employee') == user.id]
+                        elif field == 'services':
+                            has_permission = (
+                                user.has_perm(permission) or 
+                                user.has_perm('djangosimplemissionapp.all_projectservicemember') or 
+                                user.has_perm('djangosimplemissionapp.own_projectservicemember')
+                            )
+                        elif field == 'project_domains':
+                            has_permission = (
+                                user.has_perm(permission) or
+                                user.has_perm('djangosimplemissionapp.viewnameonly_projectdomain')
+                            )
+                        elif field == 'project_servers':
+                            has_permission = (
+                                user.has_perm(permission) or
+                                user.has_perm('djangosimplemissionapp.viewnameonly_projectserver')
+                            )
+                        else:
+                            has_permission = user.has_perm(permission)
+                            
+                        if not has_permission:
+                            representation.pop(field, None)
+        return representation
 
 class ScheduleSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.ReadOnlyField(source='assigned_to.username')

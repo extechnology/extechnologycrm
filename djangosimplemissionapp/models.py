@@ -292,7 +292,8 @@ class ProjectDomain(models.Model):
         permissions = [
             ("view_domain_stats", "Can view domain analytics and stats"),
             ("viewnameonly_projectdomain", "can view "),
-
+            ("viewfinancials_projectdomain", "Can view financial data of domains"),
+            ("viewdates_projectdomain", "Can view purchase/expiry dates of domains"),
         ]
 
 class ProjectServer(models.Model):
@@ -349,7 +350,8 @@ class ProjectServer(models.Model):
         permissions = [
             ("view_server_stats", "Can view server analytics and stats"),
             ("viewnameonly_projectserver", "can view "),
-
+            ("viewfinancials_projectserver", "Can view financial data of servers"),
+            ("viewdates_projectserver", "Can view purchase/expiry dates of servers"),
         ]
 
 class ProjectExbot(models.Model):
@@ -397,6 +399,8 @@ class ProjectExbot(models.Model):
     class Meta:
         permissions = [
             ("view_exbot_stats", "Can view exbot analytics and stats"),
+            ("viewfinancials_projectexbot", "Can view financial data of exbots"),
+            ("viewdates_projectexbot", "Can view active/deactive dates of exbots"),
         ]
 
 class ProjectFinance(models.Model):
@@ -498,8 +502,9 @@ class Project(models.Model):
         permissions = [
             ("view_analytics",    "Can view analytical dashboard"),
             ("view_projectstats", "Can view project analytics and stats"),
+            ("viewprojectfinancestats_analytics", "Can view financial data of projects")
         ]
-
+ 
 class ProjectDocument(models.Model):
     project = models.ForeignKey(
         "Project", 
@@ -724,11 +729,13 @@ class EmployeeDailyActivity(models.Model):
         permissions = [
             ("view_all_activities", "Can view all employee daily activities"),
             ("view_own_activities", "Can view own daily activities"),
-        ]
+            ("viewmeandprojectmember_employeedailyactivity", "Can view activities of self, project team members, and service team members"),
+        ]  
+   
 
     def __str__(self):
         return f"{self.employee.username} - {self.date}"
-
+ 
 class ActivityLog(models.Model):
     activity = models.ForeignKey(EmployeeDailyActivity, on_delete=models.CASCADE, related_name='logs')
     description = models.TextField()
@@ -1246,11 +1253,19 @@ class Attendance(models.Model):
         ('WorkFromHome', 'Work From Home'),
     )
 
+    APPROVAL_CHOICES = (
+        ('Pending', 'Pending'),
+        ('Approved', 'Approved'),
+        ('Rejected', 'Rejected'),
+    )
+
     employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="attendance_records")
     date = models.DateField()
     check_in = models.TimeField(blank=True, null=True)
     check_out = models.TimeField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    
+    approval_status = models.CharField(max_length=20, choices=APPROVAL_CHOICES, default='Pending')
 
     overtime_hours = models.FloatField(default=0)
     late_minutes = models.IntegerField(default=0)
@@ -1258,6 +1273,10 @@ class Attendance(models.Model):
     class Meta:
         unique_together = ('employee', 'date')
         ordering = ['-date']
+        permissions = [
+            ("approve_attendance", "Can approve attendance"),
+            ("reject_attendance", "Can reject attendance"),
+        ]
 
     def __str__(self):
         return f"{self.employee.username} - {self.date} - {self.status}"

@@ -408,6 +408,8 @@ class ProjectAnalyticalAPIView(APIView):
         # Auto-trigger expiry check every time this API is called
         self._run_expiry_check()
 
+        has_fin_perm = request.user.has_perm('djangosimplemissionapp.viewprojectfinancestats_analytics') or request.user.is_superuser or (hasattr(request.user, 'has_role') and (request.user.has_role('SuperAdmin') or request.user.has_role('Admin')))
+
         from .models import Project, ProjectService, ProjectFinance, ProjectTeam, ProjectServiceTeam
         from rest_framework.pagination import PageNumberPagination
         
@@ -559,7 +561,7 @@ class ProjectAnalyticalAPIView(APIView):
             "payment": {
                 "unpaid_projects": unpaid_project_count,
                 "paid_projects": ov_projects.count() - unpaid_project_count,
-                "total_remaining_amount": total_ov_remaining_amount
+                "total_remaining_amount": total_ov_remaining_amount if has_fin_perm else None
             },
             "work": {
                 "unfinished_teams": unfinished_teams,
@@ -674,60 +676,60 @@ class ProjectAnalyticalAPIView(APIView):
 
             category_status = {
                 "project": "Paid" if (completed_teams_count == total_teams_count) else "Unpaid",
-                "project_total_cost": teams_total,
-                "project_paid_cost": teams_paid,
-                "project_unpaid_cost": teams_total - teams_paid,
+                "project_total_cost": teams_total if has_fin_perm else None,
+                "project_paid_cost": teams_paid if has_fin_perm else None,
+                "project_unpaid_cost": (teams_total - teams_paid) if has_fin_perm else None,
                 
                 "domain": "Paid" if (paid_domains == total_domains) else "Unpaid",
-                "domain_total_cost": domains_total,
-                "domain_paid_cost": domains_paid,
-                "domain_unpaid_cost": domains_total - domains_paid,
+                "domain_total_cost": domains_total if has_fin_perm else None,
+                "domain_paid_cost": domains_paid if has_fin_perm else None,
+                "domain_unpaid_cost": (domains_total - domains_paid) if has_fin_perm else None,
                 "domain_deadline": domain_deadline,
                 "domain_items": [
                     {
                         "name": d.name,
-                        "cost": float(d.cost or 0.0),
+                        "cost": float(d.cost or 0.0) if has_fin_perm else None,
                         "payment_status": d.payment_status,
                         "accrued_by": d.accrued_by,
                         "deadline": d.expiration_date.strftime('%Y-%m-%d') if d.expiration_date else None
                     } for d in domains
                 ],
                 "server": "Paid" if (paid_servers == total_servers) else "Unpaid",
-                "server_total_cost": servers_total,
-                "server_paid_cost": servers_paid,
-                "server_unpaid_cost": servers_total - servers_paid,
+                "server_total_cost": servers_total if has_fin_perm else None,
+                "server_paid_cost": servers_paid if has_fin_perm else None,
+                "server_unpaid_cost": (servers_total - servers_paid) if has_fin_perm else None,
                 "server_deadline": server_deadline,
                 "server_items": [
                     {
                         "name": s.name,
-                        "cost": float(s.cost or 0.0),
+                        "cost": float(s.cost or 0.0) if has_fin_perm else None,
                         "payment_status": s.payment_status,
                         "accrued_by": s.accrued_by,
                         "deadline": s.expiration_date.strftime('%Y-%m-%d') if s.expiration_date else None
                     } for s in servers
                 ],
                 "service": "Paid" if (p_srvs.filter(payment_status__iexact='PAID').count() == p_srvs.count()) else "Unpaid",
-                "service_total_cost": services_total,
-                "service_paid_cost": services_paid,
-                "service_unpaid_cost": services_total - services_paid,
+                "service_total_cost": services_total if has_fin_perm else None,
+                "service_paid_cost": services_paid if has_fin_perm else None,
+                "service_unpaid_cost": (services_total - services_paid) if has_fin_perm else None,
 
                 "exbot": "Paid" if (paid_exbots == total_exbots) else "Unpaid",
-                "exbot_total_cost": exbots_total,
-                "exbot_paid_cost": exbots_paid,
-                "exbot_unpaid_cost": exbots_total - exbots_paid,
+                "exbot_total_cost": exbots_total if has_fin_perm else None,
+                "exbot_paid_cost": exbots_paid if has_fin_perm else None,
+                "exbot_unpaid_cost": (exbots_total - exbots_paid) if has_fin_perm else None,
                 "exbot_items": [
                     {
                         "whatsapp": ex.whatsapp_number,
-                        "cost": float(ex.plan_rate or 0.0),
+                        "cost": float(ex.plan_rate or 0.0) if has_fin_perm else None,
                         "payment_status": ex.payment_status,
                         "deadline": ex.plan_deactive_date.strftime('%Y-%m-%d') if ex.plan_deactive_date else None
                     } for ex in exbots
                 ],
                 
                 "finance": "Paid" if (paid_finances == total_finances and total_finances > 0) else ("No Finance" if total_finances == 0 else "Unpaid"),
-                "finance_total_cost": finances_total,
-                "finance_paid_cost": finances_paid,
-                "finance_unpaid_cost": finances_total - finances_paid,
+                "finance_total_cost": finances_total if has_fin_perm else None,
+                "finance_paid_cost": finances_paid if has_fin_perm else None,
+                "finance_unpaid_cost": (finances_total - finances_paid) if has_fin_perm else None,
             }
 
 
@@ -786,14 +788,14 @@ class ProjectAnalyticalAPIView(APIView):
                     "paid_status": service.payment_status,
                     "service_team_start_date": service.teams.aggregate(Min('start_date'))['start_date__min'],
                     "service_team_deadline": service.teams.aggregate(Max('deadline'))['deadline__max'],
-                    "service_cost": float(service.cost or 0.0),
+                    "service_cost": float(service.cost or 0.0) if has_fin_perm else None,
                 })
 
             project_finances_data = []
             for pf in project.project_finances.all():
                 project_finances_data.append({
                     "id": pf.id,
-                    "project_cost": float(pf.project_cost or 0.0),
+                    "project_cost": float(pf.project_cost or 0.0) if has_fin_perm else None,
                     "invoice_status": pf.invoice_status,
                     "payment_status": pf.payment_status,
                 })
@@ -805,10 +807,10 @@ class ProjectAnalyticalAPIView(APIView):
                 "project_team_name": project_team_names or "No Team",
                 "project_team_status": pt_status,
                 "status": project_status,
-                "total_paid": total_paid,
-                "balance_due": balance_due,
-                "total_project_cost": total_project_cost,
-                "project_cost": project_cost,
+                "total_paid": total_paid if has_fin_perm else None,
+                "balance_due": balance_due if has_fin_perm else None,
+                "total_project_cost": total_project_cost if has_fin_perm else None,
+                "project_cost": project_cost if has_fin_perm else None,
                 "category_status": category_status,
                 "project_payment": category_status["project"], # Legacy
                 "domain_payment": domain_payment_str, 
@@ -864,6 +866,7 @@ class ServerAnalyticsAPIView(APIView):
         from django.utils import timezone
         from datetime import timedelta
 
+        has_fin_perm_server = request.user.has_perm('djangosimplemissionapp.viewfinancials_projectserver') or request.user.is_superuser or (hasattr(request.user, 'has_role') and (request.user.has_role('SuperAdmin') or request.user.has_role('Admin')))
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
@@ -919,7 +922,7 @@ class ServerAnalyticsAPIView(APIView):
                 "project": s.project.name if s.project else None,
                 "payment_status": s.payment_status,
                 "status": s.status,
-                "cost": float(s.cost) if s.cost else 0.0,
+                "cost": (float(s.cost) if s.cost else 0.0) if has_fin_perm_server else None,
                 "accrued_by": s.accrued_by,
                 "purchased_from": s.purchased_from,
                 "days_until_expiry": days_until_expiry,
@@ -946,7 +949,7 @@ class ServerAnalyticsAPIView(APIView):
                 "expiring_soon_count": computed_expiring_soon,
                 "paid_servers": paid_servers_count,
                 "unpaid_servers": unpaid_servers_count,
-                "total_cost": float(total_cost)
+                "total_cost": float(total_cost) if has_fin_perm_server else None
             },
             "by_server_type": by_server_type,
             "by_accrued_by": by_accrued_by,
@@ -967,6 +970,7 @@ class DomainAnalyticsAPIView(APIView):
         from django.utils import timezone
         from datetime import timedelta
 
+        has_fin_perm_domain = request.user.has_perm('djangosimplemissionapp.viewfinancials_projectdomain') or request.user.is_superuser or (hasattr(request.user, 'has_role') and (request.user.has_role('SuperAdmin') or request.user.has_role('Admin')))
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
@@ -1016,7 +1020,7 @@ class DomainAnalyticsAPIView(APIView):
                 "project": d.project.name if d.project else None,
                 "payment_status": d.payment_status,
                 "status": d.status,
-                "cost": float(d.cost) if d.cost else 0.0,
+                "cost": (float(d.cost) if d.cost else 0.0) if has_fin_perm_domain else None,
                 "accrued_by": d.accrued_by,
                 "purchased_from": d.purchased_from,
                 "days_until_expiry": days_until_expiry,
@@ -1043,7 +1047,7 @@ class DomainAnalyticsAPIView(APIView):
                 "expiring_soon_count": computed_expiring_soon,
                 "paid_domains": paid_domains_count,
                 "unpaid_domains": unpaid_domains_count,
-                "total_cost": float(total_cost)
+                "total_cost": float(total_cost) if has_fin_perm_domain else None
             },
             "by_accrued_by": by_accrued_by,
             "expiring_soon": expiring_soon,
@@ -1064,6 +1068,7 @@ class ExbotAnalyticsAPIView(APIView):
         from django.utils import timezone
         from datetime import timedelta
 
+        has_fin_perm_exbot = request.user.has_perm('djangosimplemissionapp.viewfinancials_projectexbot') or request.user.is_superuser or (hasattr(request.user, 'has_role') and (request.user.has_role('SuperAdmin') or request.user.has_role('Admin')))
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
@@ -1107,7 +1112,7 @@ class ExbotAnalyticsAPIView(APIView):
                 "project": e.project.name if e.project else None,
                 "payment_status": e.payment_status,
                 "status": e.status,
-                "plan_rate": float(e.plan_rate) if e.plan_rate else 0.0,
+                "plan_rate": (float(e.plan_rate) if e.plan_rate else 0.0) if has_fin_perm_exbot else None,
                 "days_until_expiry": days_until_expiry,
                 "description": e.description,
             })
@@ -1130,7 +1135,7 @@ class ExbotAnalyticsAPIView(APIView):
                 "expiring_soon_count": computed_expiring_soon,
                 "paid_exbots": paid_exbots_count,
                 "unpaid_exbots": unpaid_exbots_count,
-                "total_cost": float(total_cost)
+                "total_cost": float(total_cost) if has_fin_perm_exbot else None
             },
             "by_category": by_category,
             "expiring_soon": [e for e in detailed_exbots_list if e["days_until_expiry"] is not None and 0 <= e["days_until_expiry"] <= 30],

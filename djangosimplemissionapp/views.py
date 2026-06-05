@@ -471,7 +471,7 @@ class ProjectDomainListCreateAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['name', 'purchased_from', 'status', 'accrued_by']
+    search_fields = ['name', 'purchased_from', 'status', 'accrued_by','project__name']
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -555,7 +555,7 @@ class ProjectServerListCreateAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['name', 'server_type', 'purchased_from', 'status', 'accrued_by']
+    search_fields = ['name', 'server_type', 'purchased_from', 'status', 'accrued_by',"project__name",]
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -639,7 +639,7 @@ class ProjectExbotListCreateAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['whatsapp_number', 'plan_category', 'status', 'payment_status']
+    search_fields = ['whatsapp_number', 'plan_category', 'status', 'payment_status','project__name']
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -991,12 +991,30 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
     def get_queryset(self):
         can_view_all = self.request.user.has_perm('djangosimplemissionapp.view_all_activities')
         can_view_own = self.request.user.has_perm('djangosimplemissionapp.view_own_activities') or can_view_all
+        can_view_team = self.request.user.has_perm('djangosimplemissionapp.viewmeandprojectmember_employeedailyactivity')
         
-        if not (can_view_all or can_view_own):
+        if not (can_view_all or can_view_own or can_view_team):
             return EmployeeDailyActivity.objects.none()
 
         if can_view_all:
             return EmployeeDailyActivity.objects.all()
+            
+        if can_view_team:
+            from django.db.models import Q
+            from .models import ProjectTeamMember, ProjectServiceMember
+            
+            user_projects = ProjectTeamMember.objects.filter(employee=self.request.user).values_list('project_id', flat=True)
+            team_members = ProjectTeamMember.objects.filter(project_id__in=user_projects).values_list('employee_id', flat=True)
+            
+            user_services = ProjectServiceMember.objects.filter(employee=self.request.user).values_list('service_id', flat=True)
+            service_members = ProjectServiceMember.objects.filter(service_id__in=user_services).values_list('employee_id', flat=True)
+
+            return EmployeeDailyActivity.objects.filter(
+                Q(employee=self.request.user) | 
+                Q(employee_id__in=team_members) | 
+                Q(employee_id__in=service_members)
+            ).distinct()
+
         return EmployeeDailyActivity.objects.filter(employee=self.request.user)
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
@@ -1134,8 +1152,22 @@ class EmployeeSpecificActivityListAPIView(APIView):
         # 0. Permission check
         can_view_all = request.user.has_perm('djangosimplemissionapp.view_all_activities')
         can_view_own = request.user.has_perm('djangosimplemissionapp.view_own_activities') or can_view_all
+        can_view_team = request.user.has_perm('djangosimplemissionapp.viewmeandprojectmember_employeedailyactivity')
         
-        if not (can_view_all or (can_view_own and request.user.id == int(employee_id))):
+        is_allowed = can_view_all or (can_view_own and request.user.id == int(employee_id))
+        
+        if not is_allowed and can_view_team:
+            from .models import ProjectTeamMember, ProjectServiceMember
+            user_projects = ProjectTeamMember.objects.filter(employee=request.user).values_list('project_id', flat=True)
+            team_members = ProjectTeamMember.objects.filter(project_id__in=user_projects).values_list('employee_id', flat=True)
+            
+            user_services = ProjectServiceMember.objects.filter(employee=request.user).values_list('service_id', flat=True)
+            service_members = ProjectServiceMember.objects.filter(service_id__in=user_services).values_list('employee_id', flat=True)
+            
+            if int(employee_id) in team_members or int(employee_id) in service_members:
+                is_allowed = True
+                
+        if not is_allowed:
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         # 1. Fetch activities for the specified employee
         activities = EmployeeDailyActivity.objects.filter(employee_id=employee_id).order_by('-date', '-created_at')
@@ -1188,10 +1220,23 @@ class EmployeeWorkDetailsAPIView(APIView):
         # For simplicity, we leverage the same 'view_all_activities' / 'view_own_activities' or keep it open for self.
         can_view_all = request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
                        request.user.has_perm('djangosimplemissionapp.view_all_employee_performance')
+        can_view_team = request.user.has_perm('djangosimplemissionapp.viewmeandprojectmember_employeedailyactivity')
         
         is_self = request.user.id == int(employee_id)
+        is_allowed = can_view_all or is_self
         
-        if not (can_view_all or is_self):
+        if not is_allowed and can_view_team:
+            from .models import ProjectTeamMember, ProjectServiceMember
+            user_projects = ProjectTeamMember.objects.filter(employee=request.user).values_list('project_id', flat=True)
+            team_members = ProjectTeamMember.objects.filter(project_id__in=user_projects).values_list('employee_id', flat=True)
+            
+            user_services = ProjectServiceMember.objects.filter(employee=request.user).values_list('service_id', flat=True)
+            service_members = ProjectServiceMember.objects.filter(service_id__in=user_services).values_list('employee_id', flat=True)
+            
+            if int(employee_id) in team_members or int(employee_id) in service_members:
+                is_allowed = True
+
+        if not is_allowed:
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         from .models import ProjectTeamMember, ProjectServiceMember, EmployeeDailyActivity
         
@@ -1285,8 +1330,27 @@ class EmployeeDailyActivityDetailAPIView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         can_view_all = self.request.user.has_perm('djangosimplemissionapp.view_all_activities')
+        can_view_team = self.request.user.has_perm('djangosimplemissionapp.viewmeandprojectmember_employeedailyactivity')
+
         if can_view_all:
             return EmployeeDailyActivity.objects.all()
+            
+        if can_view_team:
+            from django.db.models import Q
+            from .models import ProjectTeamMember, ProjectServiceMember
+            
+            user_projects = ProjectTeamMember.objects.filter(employee=self.request.user).values_list('project_id', flat=True)
+            team_members = ProjectTeamMember.objects.filter(project_id__in=user_projects).values_list('employee_id', flat=True)
+            
+            user_services = ProjectServiceMember.objects.filter(employee=self.request.user).values_list('service_id', flat=True)
+            service_members = ProjectServiceMember.objects.filter(service_id__in=user_services).values_list('employee_id', flat=True)
+
+            return EmployeeDailyActivity.objects.filter(
+                Q(employee=self.request.user) | 
+                Q(employee_id__in=team_members) | 
+                Q(employee_id__in=service_members)
+            ).distinct()
+
         return EmployeeDailyActivity.objects.filter(employee=self.request.user)
 
 class ActivityLogListCreateAPIView(ListCreateAPIView):
@@ -1787,7 +1851,7 @@ class AttendanceListCreateAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['employee__user__username', 'status']
+    search_fields = ['employee__user__username', 'status', 'approval_status']
 
 class AttendanceDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Attendance.objects.all()

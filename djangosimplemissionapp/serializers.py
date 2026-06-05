@@ -322,6 +322,24 @@ class ProjectDomainSerializer(serializers.ModelSerializer):
                 instance.provider.add(provider)
         return instance
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if not user.has_perm('djangosimplemissionapp.viewfinancials_projectdomain'):
+                    attrs.pop('cost', None)
+                    attrs.pop('invoice_status', None)
+                    attrs.pop('payment_status', None)
+                if not user.has_perm('djangosimplemissionapp.viewdates_projectdomain'):
+                    attrs.pop('purchase_date', None)
+                    attrs.pop('expiration_date', None)
+        return attrs
+
     def to_representation(self, instance):
         representation = super().to_representation(instance)
         request = self.context.get('request')
@@ -338,6 +356,18 @@ class ProjectDomainSerializer(serializers.ModelSerializer):
                     for field in list(representation.keys()):
                         if field not in allowed_fields:
                             representation.pop(field, None)
+                            
+                # Check financials
+                if not user.has_perm('djangosimplemissionapp.viewfinancials_projectdomain'):
+                    representation.pop('cost', None)
+                    representation.pop('invoice_status', None)
+                    representation.pop('payment_status', None)
+                
+                # Check dates
+                if not user.has_perm('djangosimplemissionapp.viewdates_projectdomain'):
+                    representation.pop('purchase_date', None)
+                    representation.pop('expiration_date', None)
+                    
         return representation
 
 
@@ -372,6 +402,24 @@ class ProjectServerSerializer(serializers.ModelSerializer):
                 instance.provider.add(provider)
         return instance
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if not user.has_perm('djangosimplemissionapp.viewfinancials_projectserver'):
+                    attrs.pop('cost', None)
+                    attrs.pop('invoice_status', None)
+                    attrs.pop('payment_status', None)
+                if not user.has_perm('djangosimplemissionapp.viewdates_projectserver'):
+                    attrs.pop('purchase_date', None)
+                    attrs.pop('expiration_date', None)
+        return attrs
+
     def to_representation(self, instance):
         representation = super().to_representation(instance)
         request = self.context.get('request')
@@ -388,6 +436,18 @@ class ProjectServerSerializer(serializers.ModelSerializer):
                     for field in list(representation.keys()):
                         if field not in allowed_fields:
                             representation.pop(field, None)
+                            
+                # Check financials
+                if not user.has_perm('djangosimplemissionapp.viewfinancials_projectserver'):
+                    representation.pop('cost', None)
+                    representation.pop('invoice_status', None)
+                    representation.pop('payment_status', None)
+                
+                # Check dates
+                if not user.has_perm('djangosimplemissionapp.viewdates_projectserver'):
+                    representation.pop('purchase_date', None)
+                    representation.pop('expiration_date', None)
+                    
         return representation
 
 class ProjectExbotSerializer(serializers.ModelSerializer):
@@ -396,6 +456,45 @@ class ProjectExbotSerializer(serializers.ModelSerializer):
         model = ProjectExbot
         fields = '__all__'
         extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if not user.has_perm('djangosimplemissionapp.viewfinancials_projectexbot'):
+                    attrs.pop('plan_rate', None)
+                    attrs.pop('payment_status', None)
+                    attrs.pop('invoice_status', None)
+                if not user.has_perm('djangosimplemissionapp.viewdates_projectexbot'):
+                    attrs.pop('plan_active_date', None)
+                    attrs.pop('plan_deactive_date', None)
+        return attrs
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and request.user:
+            user = request.user
+            is_admin_or_sa = user.is_superuser
+            if hasattr(user, 'has_role'):
+                is_admin_or_sa = is_admin_or_sa or user.has_role('SuperAdmin') or user.has_role('Admin')
+            
+            if not is_admin_or_sa:
+                if not user.has_perm('djangosimplemissionapp.viewfinancials_projectexbot'):
+                    representation.pop('plan_rate', None)
+                    representation.pop('payment_status', None)
+                    representation.pop('invoice_status', None)
+                
+                if not user.has_perm('djangosimplemissionapp.viewdates_projectexbot'):
+                    representation.pop('plan_active_date', None)
+                    representation.pop('plan_deactive_date', None)
+                    
+        return representation
 
 
 
@@ -993,6 +1092,13 @@ class AttendanceSerializer(serializers.ModelSerializer):
         if obj.employee.first_name or obj.employee.last_name:
             return f"{obj.employee.first_name} {obj.employee.last_name}".strip()
         return obj.employee.username
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and 'approval_status' in attrs:
+            if not request.user.has_perm('djangosimplemissionapp.approve_attendance'):
+                attrs.pop('approval_status', None)
+        return attrs
 
 class UserSalarySerializer(serializers.ModelSerializer):
     username = serializers.ReadOnlyField(source='user.username')

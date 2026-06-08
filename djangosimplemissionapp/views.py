@@ -13,7 +13,7 @@ from .models import (
     Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,ProjectServiceMember,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,ProjectDocument,
-    ClientAdvance, UserSalary,ProjectExbot,Lead,FollowUp,Schedule,SystemAuditLog
+    ClientAdvance, UserSalary, SalaryIncrement,ProjectExbot,Lead,FollowUp,Schedule,SystemAuditLog
 )
   
 from .serializers import (
@@ -24,7 +24,7 @@ from .serializers import (
     ProjectSerializer,ProjectBaseInformationSerializer,ProjectExcutionSerializer,ProjectTeamMemberSerializer,ProjectServiceSerializer,
     EmployeeDailyActivitySerializer,ActivityLogSerializer,InvoiceSerializer,InvoiceItemSerializer,PaymentSerializer,ActivityExceedCommentSerializer,
     NotificationSerializer,EmployeeLeaveSerializer,CompanySerializer,CompanyProfileSerializer,SalarySerializer,AttendanceSerializer,EmployeeSerializer,OtherIncomeSerializer,OtherExpenseSerializer,RoleSerializer, PermissionSerializer,
-    ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer,ProjectExbotSerializer,
+    ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer, SalaryIncrementSerializer,ProjectExbotSerializer,
     LeadSerializer, FollowUpSerializer, ScheduleSerializer, EmployeeSalarySummarySerializer
 )
 
@@ -992,6 +992,7 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
         can_view_all = self.request.user.has_perm('djangosimplemissionapp.view_all_activities')
         can_view_own = self.request.user.has_perm('djangosimplemissionapp.view_own_activities') or can_view_all
         can_view_team = self.request.user.has_perm('djangosimplemissionapp.viewmeandprojectmember_employeedailyactivity')
+        can_view_managers = self.request.user.has_perm('djangosimplemissionapp.viewmanagerallteammember_employeedailyactivity')
         
         if not (can_view_all or can_view_own or can_view_team):
             return EmployeeDailyActivity.objects.none()
@@ -1009,11 +1010,29 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
             user_services = ProjectServiceMember.objects.filter(employee=self.request.user).values_list('service_id', flat=True)
             service_members = ProjectServiceMember.objects.filter(service_id__in=user_services).values_list('employee_id', flat=True)
 
-            return EmployeeDailyActivity.objects.filter(
+            queryset = EmployeeDailyActivity.objects.filter(
                 Q(employee=self.request.user) | 
                 Q(employee_id__in=team_members) | 
                 Q(employee_id__in=service_members)
             ).distinct()
+            
+            # Exclude managers if user doesn't have view_manager_all_team_member permission
+            if not can_view_managers:
+                manager_roles = list(ProjectTeamMember.MANAGER_ROLES) + list(ProjectServiceMember.MANAGER_ROLES)
+                manager_ids = ProjectTeamMember.objects.filter(
+                    role__in=manager_roles,
+                    project_id__in=user_projects
+                ).values_list('employee_id', flat=True)
+                
+                manager_service_ids = ProjectServiceMember.objects.filter(
+                    role__in=ProjectServiceMember.MANAGER_ROLES,
+                    service_id__in=user_services
+                ).values_list('employee_id', flat=True)
+                
+                manager_ids = set(manager_ids) | set(manager_service_ids)
+                queryset = queryset.exclude(employee_id__in=manager_ids)
+            
+            return queryset
 
         return EmployeeDailyActivity.objects.filter(employee=self.request.user)
     pagination_class = StandardResultsSetPagination
@@ -1688,9 +1707,60 @@ class EmployeeLeaveListCreateAPIView(ListCreateAPIView):
         user = self.request.user
 
         if user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_employeeleave'):
-            return EmployeeLeave.objects.all().order_by('-start_date')
+            queryset = EmployeeLeave.objects.all().order_by('-start_date')
+            # allow admins to filter by employee
+            employee_id = self.request.query_params.get('employee')
+            if employee_id:
+                queryset = queryset.filter(employee_id=employee_id)
+            
+            project_id = self.request.query_params.get('project')
+            if project_id:
+                from .models import ProjectTeamMember
+                # Find all employees that belong to this project
+                team_employees = ProjectTeamMember.objects.filter(
+                    project_id=project_id, 
+                    status__in=['Pending', 'Progressing']
+                ).values_list('employee_id', flat=True)
+                queryset = queryset.filter(employee_id__in=team_employees)
+        else:
+            queryset = EmployeeLeave.objects.filter(employee=user).order_by('-start_date')
 
-        return EmployeeLeave.objects.filter(employee=user).order_by('-start_date')
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        status_filter = self.request.query_params.get('status')
+
+        if start_date:
+            queryset = queryset.filter(start_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(end_date__lte=end_date)
+            
+        if status_filter:
+            queryset = queryset.filter(status__iexact=status_filter)
+            
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Compute stats on the full filtered queryset (before pagination)
+        from django.db.models import Count, Q
+        stats = queryset.aggregate(
+            total=Count('id'),
+            approved=Count('id', filter=Q(status__iexact='approved')),
+            rejected=Count('id', filter=Q(status__iexact='rejected')),
+            cancelled=Count('id', filter=Q(status__iexact='cancelled')),
+            pending=Count('id', filter=Q(status__iexact='pending') | Q(status__isnull=True) | Q(status='')),
+        )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['stats'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({'results': serializer.data, 'stats': stats})
 
 class EmployeeLeaveDetailAPIView(RetrieveUpdateDestroyAPIView):
     serializer_class = EmployeeLeaveSerializer
@@ -1759,6 +1829,57 @@ class EmployeeSalarySummaryListAPIView(ListAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['username', 'first_name', 'last_name']
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # User role based filtering
+        user = self.request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_salary')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_salary') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            # If user has neither permission, deny access
+            return queryset.none()
+        
+        if not can_view_all:
+            # If can only view own, filter to their records
+            queryset = queryset.filter(id=user.id)
+        
+        # Filter by specific user/employee
+        user_filter = self.request.query_params.get('user_id')
+        if user_filter:
+            queryset = queryset.filter(id=user_filter)
+        
+        # Filter by salary status
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(salaries__status__iexact=status_filter).distinct()
+        
+        # Filter by minimum paid count
+        from django.db.models import Count, Q
+        min_paid_count = self.request.query_params.get('min_paid_count')
+        if min_paid_count:
+            try:
+                min_paid = int(min_paid_count)
+                queryset = queryset.annotate(
+                    paid_count=Count('salaries', filter=Q(salaries__status='Paid'))
+                ).filter(paid_count__gte=min_paid)
+            except (ValueError, TypeError):
+                pass
+        
+        # Filter by minimum unpaid count
+        min_unpaid_count = self.request.query_params.get('min_unpaid_count')
+        if min_unpaid_count:
+            try:
+                min_unpaid = int(min_unpaid_count)
+                queryset = queryset.annotate(
+                    unpaid_count=Count('salaries', filter=Q(salaries__status='Unpaid'))
+                ).filter(unpaid_count__gte=min_unpaid)
+            except (ValueError, TypeError):
+                pass
+        
+        return queryset
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
@@ -1770,13 +1891,26 @@ class EmployeeSalarySummaryListAPIView(ListAPIView):
             serializer = self.get_serializer(queryset, many=True)
             response = Response(serializer.data)
 
-        # Calculate global statistics for salaries
-        from django.db.models import Sum, Count, Case, When, IntegerField
-        all_salaries = Salary.objects.all()
+        # Calculate statistics based on filtered employees' salaries
+        from django.db.models import Sum, Count, Case, When, IntegerField, Q
         
-        # Apply search filters if needed (but search here is on User, not Salary)
-        # For simplicity, we'll return global stats or stats matching the user list
-        stats = all_salaries.aggregate(
+        # Get filtered salary records
+        filtered_salaries = Salary.objects.filter(employee__in=queryset)
+        
+        # Apply status filter if provided
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            filtered_salaries = filtered_salaries.filter(status__iexact=status_filter)
+        
+        # Apply date range filters if provided
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            filtered_salaries = filtered_salaries.filter(created_at__date__gte=start_date)
+        if end_date:
+            filtered_salaries = filtered_salaries.filter(created_at__date__lte=end_date)
+        
+        stats = filtered_salaries.aggregate(
             total_basic=Sum('basic'),
             paid_count=Count(Case(When(status='Paid', then=1), output_field=IntegerField())),
             unpaid_count=Count(Case(When(status='Unpaid', then=1), output_field=IntegerField()))
@@ -1827,6 +1961,20 @@ class SalaryListCreateAPIView(ListCreateAPIView):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        
+        # User role based filtering
+        user = self.request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_salary')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_salary') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            # If user has neither permission, deny access
+            return queryset.none()
+        
+        if not can_view_all:
+            # If can only view own, filter to their records
+            queryset = queryset.filter(employee=user)
+        
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
         employee_id = self.request.query_params.get('employee')
@@ -1835,7 +1983,7 @@ class SalaryListCreateAPIView(ListCreateAPIView):
             queryset = queryset.filter(start_date__gte=start_date)
         if end_date:
             queryset = queryset.filter(end_date__lte=end_date)
-        if employee_id:
+        if can_view_all and employee_id:
             queryset = queryset.filter(employee_id=employee_id)
             
         return queryset
@@ -1851,7 +1999,86 @@ class AttendanceListCreateAPIView(ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['employee__user__username', 'status', 'approval_status']
+    search_fields = ['employee__username', 'status', 'approval_status']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # User role based filtering
+        user = self.request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_attendance')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_attendance') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            # If user has neither permission, deny access
+            return queryset.none()
+        
+        if not can_view_all:
+            # If can only view own, filter to their records
+            queryset = queryset.filter(employee=user)
+        else:
+            # allow admins to filter by employee
+            employee_id = self.request.query_params.get('employee')
+            if employee_id:
+                queryset = queryset.filter(employee_id=employee_id)
+            
+            project_id = self.request.query_params.get('project')
+            if project_id:
+                from .models import ProjectTeamMember
+                # Find all employees that belong to this project
+                team_employees = ProjectTeamMember.objects.filter(
+                    project_id=project_id, 
+                    status__in=['Pending', 'Progressing']
+                ).values_list('employee_id', flat=True)
+                queryset = queryset.filter(employee_id__in=team_employees)
+
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        date = self.request.query_params.get('date')
+        status_filter = self.request.query_params.get('status')
+        approval_status = self.request.query_params.get('approval_status')
+
+        if date:
+            queryset = queryset.filter(date=date)
+        else:
+            if start_date:
+                queryset = queryset.filter(date__gte=start_date)
+            if end_date:
+                queryset = queryset.filter(date__lte=end_date)
+                
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+            
+        if approval_status:
+            queryset = queryset.filter(approval_status=approval_status)
+            
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Compute stats on the full filtered queryset (before pagination)
+        from django.db.models import Count, Q
+        stats = queryset.aggregate(
+            total=Count('id'),
+            present=Count('id', filter=Q(status='Present')),
+            absent=Count('id', filter=Q(status='Absent')),
+            half_day=Count('id', filter=Q(status='Half Day')),
+            late=Count('id', filter=Q(status='Late')),
+            approved=Count('id', filter=Q(approval_status='Approved')),
+            rejected=Count('id', filter=Q(approval_status='Rejected')),
+            pending=Count('id', filter=Q(approval_status='Pending') | Q(approval_status__isnull=True)),
+        )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['stats'] = stats
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({'results': serializer.data, 'stats': stats})
 
 class AttendanceDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Attendance.objects.all()
@@ -1872,17 +2099,199 @@ class EmployeeDetailAPIView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
 class UserSalaryListCreateAPIView(ListCreateAPIView):
-    queryset = UserSalary.objects.all()
     serializer_class = UserSalarySerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
-    search_fields = ['user__username',]
+    search_fields = ['user__username', 'user__first_name', 'user__last_name']
+
+    def get_queryset(self):
+        qs = UserSalary.objects.all().order_by('-effective_date', '-created_at')
+        
+        # User role based filtering
+        user = self.request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_usersalary')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_usersalary') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            # If user has neither permission, deny access
+            return qs.none()
+        
+        if not can_view_all:
+            # If can only view own, filter to their records
+            qs = qs.filter(user=user)
+        
+        user_id = self.request.query_params.get('user')
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        min_salary = self.request.query_params.get('min_salary')
+        max_salary = self.request.query_params.get('max_salary')
+        department = self.request.query_params.get('department')
+        
+        if can_view_all and user_id:
+            qs = qs.filter(user_id=user_id)
+        if start_date:
+            qs = qs.filter(effective_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(effective_date__lte=end_date)
+        if min_salary:
+            qs = qs.filter(base_salary__gte=float(min_salary))
+        if max_salary:
+            qs = qs.filter(base_salary__lte=float(max_salary))
+        if department:
+            qs = qs.filter(user__employee__department=department)
+            
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        # Calculate statistics from the filtered queryset
+        from django.db.models import Sum, Count, Avg
+        stats = queryset.aggregate(
+            total_count=Count('id'),
+            total_base_salary=Sum('base_salary'),
+            average_salary=Avg('base_salary'),
+            unique_employees=Count('user', distinct=True)
+        )
+
+        response.data = {
+            'results': response.data if isinstance(response.data, list) else response.data.get('results', []),
+            'statistics': {
+                'total_count': stats['total_count'] or 0,
+                'total_base_salary': float(stats['total_base_salary'] or 0),
+                'average_salary': float(stats['average_salary'] or 0),
+                'unique_employees': stats['unique_employees'] or 0
+            }
+        }
+        
+        if hasattr(response, 'get') and callable(getattr(response, 'get')):
+            # Preserve pagination info if it exists
+            if 'count' in response.data:
+                response.data['count'] = queryset.count()
+
+        return response
 
 class UserSalaryDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = UserSalary.objects.all()
     serializer_class = UserSalarySerializer
     permission_classes = [IsAuthenticated]
+
+    def retrieve(self, request, *args, **kwargs):
+        """Override retrieve to include next salary day in response"""
+        response = super().retrieve(request, *args, **kwargs)
+        
+        user_salary = self.get_object()
+        next_salary_day = self.calculate_next_salary_day(user_salary)
+        
+        response.data['next_salary_day'] = next_salary_day
+        
+        return response
+
+    def calculate_next_salary_day(self, user_salary):
+        """
+        Calculate the next salary day based on joining_date and working_days cycle.
+        Returns the end date of the current cycle if joining_date exists.
+        """
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        if not user_salary.joining_date:
+            return None
+        
+        # Import the helper functions from models
+        from .models import get_cycle_end_date, get_cycle_for_date
+        
+        today = timezone.now().date()
+        working_days = user_salary.working_days or 26
+        
+        # Get the current cycle for today
+        start_date, end_date = get_cycle_for_date(user_salary.joining_date, today, working_days)
+        
+        # If today is within a cycle, return the end date of that cycle
+        if end_date:
+            return end_date.isoformat()
+        
+        # Fallback: calculate next cycle end date
+        return get_cycle_end_date(today, working_days).isoformat()
+
+
+# ============================================================================
+# SALARY INCREMENT API VIEWS
+# ============================================================================
+
+class SalaryIncrementListCreateAPIView(ListCreateAPIView):
+    """
+    List and create salary increments.
+    POST creates a new salary increment and automatically updates UserSalary.
+    """
+    serializer_class = SalaryIncrementSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['employee__username', 'remarks']
+
+    def get_queryset(self):
+        qs = SalaryIncrement.objects.all().order_by('-effective_date', '-created_at')
+        
+        # User role based filtering
+        user = self.request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_salaryincrement')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_salaryincrement') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            # If user has neither permission, deny access
+            return qs.none()
+        
+        if not can_view_all:
+            # If can only view own, filter to their records
+            qs = qs.filter(employee=user)
+        
+        employee_id = self.request.query_params.get('employee')
+        if can_view_all and employee_id:
+            qs = qs.filter(employee_id=employee_id)
+        return qs
+
+    def perform_create(self, serializer):
+        """
+        Set created_by to current user when creating increment.
+        Check permissions: can_view_all can create for any employee, 
+        can_view_own can only create for themselves.
+        """
+        user = self.request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_salaryincrement')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_salaryincrement') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            raise PermissionDenied("You don't have permission to create salary increments.")
+        
+        # Get the employee from the request data
+        employee_id = serializer.validated_data.get('employee').id if 'employee' in serializer.validated_data else self.request.data.get('employee')
+        
+        # If user only has view_own permission, they can only create for themselves
+        if can_view_own and not can_view_all:
+            if int(employee_id) != user.id:
+                raise PermissionDenied("You can only create salary increments for yourself.")
+        
+        serializer.save(created_by=user)
+
+
+class SalaryIncrementDetailAPIView(RetrieveUpdateDestroyAPIView):
+    """
+    Retrieve, update, or delete salary increment records.
+    """
+    queryset = SalaryIncrement.objects.all()
+    serializer_class = SalaryIncrementSerializer
+    permission_classes = [IsAuthenticated]
+
 
 class OtherIncomeListCreateAPIView(ListCreateAPIView):
 

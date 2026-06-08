@@ -544,9 +544,29 @@ class ProjectTeamMember(models.Model):
         ('Progressing', 'Progressing'),
         ('Completed', 'Completed'),
     ]
+    
+    ROLE_CHOICES = [
+        ('Project Manager', 'Project Manager'),
+        ('Tech Lead', 'Tech Lead'),
+        ('Tech Lead / Backend Developer', 'Tech Lead / Backend Developer'),
+        ('Frontend Developer', 'Frontend Developer'),
+        ('Backend Developer', 'Backend Developer'),
+        ('Fullstack Developer', 'Fullstack Developer'),
+        ('UI/UX Designer', 'UI/UX Designer'),
+        ('Mobile Developer', 'Mobile Developer'),
+        ('DevOps Engineer', 'DevOps Engineer'),
+        ('QA Engineer', 'QA Engineer'),
+        ('Quality Assurance', 'Quality Assurance'),
+        ('Business Analyst', 'Business Analyst'),
+        ('Solution Architect', 'Solution Architect'),
+        ('full stack', 'full stack'),
+    ]
+    
+    MANAGER_ROLES = ['Project Manager', 'Tech Lead', 'Tech Lead' , 'Backend Developer']  # Define which roles are managers
+    
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_team_members', null=True, blank=True)
     employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="project_team_memberships")
-    role = models.CharField(max_length=100, blank=True, null=True)
+    role = models.CharField(max_length=100, blank=True, null=True, choices=ROLE_CHOICES)
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Employee Cost for the project")
     allocated_days = models.IntegerField(default=0, help_text="Days Allowed")
     actual_days_spent = models.IntegerField(null=True, blank=True, default=0, help_text="Actually Spent Days")
@@ -651,6 +671,27 @@ class ProjectServiceMember(models.Model):
         ('Progressing', 'Progressing'),
         ('Completed', 'Completed'),
     ]
+    
+    ROLE_CHOICES = [
+        ('Service Manager', 'Service Manager'),
+        ('Project Manager', 'Project Manager'),
+        ('Tech Lead', 'Tech Lead'),
+        ('Frontend Developer', 'Frontend Developer'),
+        ('Backend Developer', 'Backend Developer'),
+        ('Fullstack Developer', 'Fullstack Developer'),
+        ('UI/UX Designer', 'UI/UX Designer'),
+        ('Mobile Developer', 'Mobile Developer'),
+        ('DevOps Engineer', 'DevOps Engineer'),
+        ('QA Engineer', 'QA Engineer'),
+        ('Quality Assurance', 'Quality Assurance'),
+        ('Business Analyst', 'Business Analyst'),
+        ('Solution Architect', 'Solution Architect'),
+        ('Integration Developer', 'Integration Developer'),
+        ('Developer', 'Developer'),
+    ]
+    
+    MANAGER_ROLES = ['Service Manager']  # Define which roles are managers
+    
     service = models.ForeignKey(
         ProjectService,
         on_delete=models.CASCADE,
@@ -662,7 +703,7 @@ class ProjectServiceMember(models.Model):
         on_delete=models.CASCADE
     )
 
-    role = models.CharField(max_length=100)
+    role = models.CharField(max_length=100, choices=ROLE_CHOICES)
 
     allocated_days = models.IntegerField(default=0)
 
@@ -730,6 +771,7 @@ class EmployeeDailyActivity(models.Model):
             ("view_all_activities", "Can view all employee daily activities"),
             ("view_own_activities", "Can view own daily activities"),
             ("viewmeandprojectmember_employeedailyactivity", "Can view activities of self, project team members, and service team members"),
+            ("viewmanagerallteammember_employeedailyactivity", "Can view all team members including managers"),
         ]  
    
 
@@ -1163,6 +1205,9 @@ class EmployeeLeave(models.Model):
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='leaves_approved')
     start_date = models.DateField()
     end_date = models.DateField()
+    leave_type = models.CharField(max_length=20, choices=[('Full Day', 'Full Day'), ('Half Day', 'Half Day')], default='Full Day')
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     status = models.CharField(max_length=20,blank=True,null=True)
     description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1213,36 +1258,6 @@ class CompanyProfile(models.Model):
     def __str__(self):
         return self.company_name
 
-     
-
-class Salary(models.Model):
-    status_choices = (
-        ('Paid', 'Paid'),
-        ('Unpaid', 'Unpaid'),
-        ('Partial', 'Partial'),
-    )
-    status = models.CharField(max_length=20, choices=status_choices, default='Unpaid')
-    employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="salaries")
-    start_date = models.DateField(null=True, blank=True)
-    end_date = models.DateField(null=True, blank=True)
-    basic = models.DecimalField(max_digits=10, decimal_places=2)
-    working_days = models.IntegerField(default=26)
-    present_days = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
-    
-    overtime_pay = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    late_deduction = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-
-    bonus = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
-    advance = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
-    deductions = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
-    total_salary = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.employee.username} ({self.start_date} to {self.end_date})"
 
 class Attendance(models.Model):
     STATUS_CHOICES = (
@@ -1276,6 +1291,8 @@ class Attendance(models.Model):
         permissions = [
             ("approve_attendance", "Can approve attendance"),
             ("reject_attendance", "Can reject attendance"),
+            ("viewall_attendance", "Can view all attendance records"),
+            ("viewown_attendance", "Can view own attendance records"),
         ]
 
     def __str__(self):
@@ -1294,19 +1311,7 @@ class Employee(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.user.username} - {self.employee_id}"   
-   
-class UserSalary(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='user_salary')
-    base_salary = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
-    working_days = models.IntegerField(default=26)
-    joining_date = models.DateField(null=True, blank=True)
-    
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.user.username} - {self.base_salary} ({self.working_days} days)"
+        return f"{self.user.username} - {self.employee_id}"
 
 class OtherIncome(models.Model):
 
@@ -1336,220 +1341,7 @@ class OtherExpense(models.Model):
     def __str__(self):
         return self.title
 
-def get_cycle_end_date(start_date, working_days=26):
-    """
-    Calculate end_date by counting forward `working_days` non-Sunday days.
-    Sunday (weekday() == 6) is a weekly off and is NOT counted.
-    Returns the last working day of the cycle.
-    """
-    count = 0
-    current = start_date
-    while count < working_days:
-        if current.weekday() != 6:  # 6 = Sunday
-            count += 1
-        if count < working_days:
-            current += timedelta(days=1)
-    return current
 
-def get_cycle_for_date(joining_date, target_date, working_days=26):
-    """
-    Finds the start_date and end_date of the 26-non-Sunday-day cycle
-    that contains the given target_date.
-    """
-    current_start = joining_date
-    while True:
-        current_end = get_cycle_end_date(current_start, working_days)
-        if current_start <= target_date <= current_end:
-            return current_start, current_end
-        if target_date < current_start:
-            break
-        # Move to next cycle start (day after end)
-        current_start = current_end + timedelta(days=1)
-    return None, None
-
-def calculate_salary(salary):
-    employee = salary.employee
-
-    attendance = Attendance.objects.filter(
-        employee=employee,
-        date__range=[salary.start_date, salary.end_date]
-    )
-
-    present_days = Decimal('0.00')
-    overtime_hours = 0
-    late_minutes = 0
-
-    # Auto-count Sundays in cycle as paid days
-    current_day = salary.start_date
-    while current_day <= salary.end_date:
-        if current_day.weekday() == 6:  # Sunday
-            present_days += Decimal('1.00')
-        current_day += timedelta(days=1)
-
-    for a in attendance:
-        if a.status == "Present":
-            present_days += Decimal('1.00')
-        elif a.status == "HalfDay":
-            present_days += Decimal('0.50')
-        elif a.status == "WorkFromHome":
-             present_days += Decimal('1.00')
-
-        overtime_hours += a.overtime_hours
-        late_minutes += a.late_minutes
-
-    salary.present_days = present_days
-
-    # Fetch UserSalary or Employee base salary and working days
-    base_sal = Decimal('26000.00')
-    w_days = 26
-
-    user_sal_config = getattr(employee, 'user_salary', None)
-    if user_sal_config:
-        base_sal = user_sal_config.base_salary
-        w_days = user_sal_config.working_days
-    elif hasattr(employee, 'profile'):
-        base_sal = employee.profile.basic_salary
-
-    salary.basic = base_sal
-    salary.working_days = w_days
-
-    daily_salary = salary.basic / Decimal(str(salary.working_days)) if salary.working_days > 0 else Decimal('0.00')
-
-    overtime_pay = Decimal(str(overtime_hours)) * Decimal('100.00')
-    late_penalty = Decimal(str(late_minutes)) * Decimal('2.00')
-    
-    # Late penalty limit: penalty <= daily salary
-    if late_penalty > daily_salary:
-        late_penalty = daily_salary
-
-    salary.overtime_pay = overtime_pay
-    salary.late_deduction = late_penalty
-
-    salary.total_salary = (
-        (Decimal(str(present_days)) * daily_salary)
-        + salary.overtime_pay
-        + salary.bonus
-        - salary.late_deduction
-        - salary.advance
-        - salary.deductions
-    )
-
-    salary.save()
-
-@receiver(post_save, sender=Attendance)
-def update_salary(sender, instance, **kwargs):
-    employee = instance.employee
-    
-    joining_date = None
-    # 1. Try to get joining_date from UserSalary (New preferred source)
-    user_sal_config = getattr(employee, 'user_salary', None)
-    if user_sal_config and user_sal_config.joining_date:
-        joining_date = user_sal_config.joining_date
-    
-    # 2. Fallback to Employee profile
-    if not joining_date and hasattr(employee, 'profile'):
-        joining_date = employee.profile.joining_date
-
-    if not joining_date:
-        return
-
-    today = instance.date
-    # Calculate which cycle the attendance date falls in (skipping Sundays)
-    w_days_temp = 26
-    user_sal_config_temp = getattr(employee, 'user_salary', None)
-    if user_sal_config_temp:
-        w_days_temp = user_sal_config_temp.working_days
-    
-    start_date, end_date = get_cycle_for_date(joining_date, today, w_days_temp)
-    if not start_date:
-        return
-
-    # Get basic salary and working days
-    basic_sal = Decimal('26000.00')
-    w_days = 26
-
-    user_sal_config = getattr(employee, 'user_salary', None)
-    if user_sal_config:
-        basic_sal = user_sal_config.base_salary
-        w_days = user_sal_config.working_days
-    elif hasattr(employee, 'profile'):
-        basic_sal = employee.profile.basic_salary
-
-    salary, created = Salary.objects.get_or_create(
-        employee=employee,
-        start_date=start_date,
-        end_date=end_date,
-        defaults={
-            "basic": basic_sal,
-            "working_days": w_days
-        }
-    )
-
-    calculate_salary(salary)
-
-def generate_salary_records(employee, joining_date):
-    """
-    Auto-generates all 26-day salary cycles from joining_date to today.
-    """
-    today = timezone.now().date()
-    current_start = joining_date
-    
-    # Get configuration
-    basic_sal = Decimal('26000.00')
-    w_days = 26
-    user_sal_config = getattr(employee, 'user_salary', None)
-    if user_sal_config:
-        basic_sal = user_sal_config.base_salary
-        w_days = user_sal_config.working_days
-    elif hasattr(employee, 'profile'):
-        basic_sal = employee.profile.basic_salary
-
-    while current_start <= today:
-        current_end = get_cycle_end_date(current_start, w_days)
-        
-        salary, created = Salary.objects.get_or_create(
-            employee=employee,
-            start_date=current_start,
-            end_date=current_end,
-            defaults={
-                "basic": basic_sal,
-                "working_days": w_days
-            }
-        )
-        calculate_salary(salary)
-        
-        # Next cycle starts the day after the end
-        current_start = current_end + timedelta(days=1)
-
-@receiver(post_save, sender=UserSalary)
-def auto_generate_cycles(sender, instance, **kwargs):
-    if instance.joining_date:
-        user = instance.user
-        new_joining_date = instance.joining_date
-        
-        # Delete any salary records that start BEFORE the new joining date
-        # (they belong to old cycle ranges that are now invalid)
-        Salary.objects.filter(
-            employee=user,
-            start_date__lt=new_joining_date
-        ).delete()
-        
-        # Regenerate all cycles from the new joining date
-        generate_salary_records(user, new_joining_date)
-
-@receiver(post_delete, sender=Attendance)
-def delete_attendance_update_salary(sender, instance, **kwargs):
-    employee = instance.employee
-    # Find the salary record that covers this attendance date
-    try:
-        salary = Salary.objects.get(
-            employee=employee,
-            start_date__lte=instance.date,
-            end_date__gte=instance.date
-        )
-        calculate_salary(salary)
-    except Salary.DoesNotExist:
-        pass
 
 @receiver(post_delete, sender=InvoiceItem)
 def reset_invoice_status_on_delete(sender, instance, **kwargs):
@@ -1703,3 +1495,445 @@ class SystemAuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} on {self.target} by {self.performed_by}"
+
+
+# ============================================================================
+# SALARY AND USER SALARY MODELS AND FUNCTIONS
+# ============================================================================
+
+class Salary(models.Model):
+    status_choices = (
+        ('Paid', 'Paid'),
+        ('Unpaid', 'Unpaid'),
+        ('Partial', 'Partial'),
+    )
+    status = models.CharField(max_length=20, choices=status_choices, default='Unpaid')
+    employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="salaries")
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    basic = models.DecimalField(max_digits=10, decimal_places=2)
+    working_days = models.IntegerField(default=26)
+    present_days = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    
+    overtime_pay = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    late_deduction = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    bonus = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    advance = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    deductions = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    total_salary = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    
+    # Industry-standard payroll fields
+    gross_salary = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    total_deductions = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    net_salary = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    
+    # Payroll freeze (prevents modification after payment)
+    is_locked = models.BooleanField(default=False, help_text="Once locked, payroll cannot be modified. Lock after payment.")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        # Auto-lock payroll when marked as Paid
+        if self.status == 'Paid':
+            self.is_locked = True
+        super().save(*args, **kwargs)
+
+    class Meta:
+        permissions = [
+            ("viewall_salary", "Can view all salary records"),
+            ("viewown_salary", "Can view own salary records"),
+        ]
+
+    def __str__(self):
+        return f"{self.employee.username} ({self.start_date} to {self.end_date})"
+
+
+class UserSalary(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_salaries')
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    working_days = models.IntegerField(default=26)
+    joining_date = models.DateField(null=True, blank=True)
+    effective_date = models.DateField(default=timezone.now)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-effective_date', '-created_at']
+        permissions = [
+            ("viewall_usersalary", "Can view all user salary records"),
+            ("viewown_usersalary", "Can view own user salary records"),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.base_salary} ({self.working_days} days)"
+
+
+class SalaryIncrement(models.Model):
+    """
+    Industry-standard salary increment tracking.
+    Records every salary change with audit trail.
+    Example: 25000 + 5000 = 30000 on 2026-04-01
+    """
+    employee = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='salary_increments'
+    )
+
+    old_salary = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Salary before increment"
+    )
+
+    increment_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount of salary increase/decrease"
+    )
+
+    new_salary = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Salary after increment"
+    )
+
+    effective_date = models.DateField()
+    remarks = models.TextField(blank=True, null=True, help_text="Reason for increment (e.g., Annual appraisal, promotion)")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_increments')
+
+    class Meta:
+        ordering = ['-effective_date', '-created_at']
+        permissions = [
+            ("viewall_salaryincrement", "Can view all salary increment records"),
+            ("viewown_salaryincrement", "Can view own salary increment records"),
+        ]
+
+    def __str__(self):
+        return f"{self.employee.username} - {self.old_salary} → {self.new_salary} (₹{self.increment_amount}) from {self.effective_date}"
+
+
+@receiver(post_delete, sender=Attendance)
+def delete_attendance_update_salary(sender, instance, **kwargs):
+    employee = instance.employee
+    # Find the salary record that covers this attendance date
+    try:
+        salary = Salary.objects.get(
+            employee=employee,
+            start_date__lte=instance.date,
+            end_date__gte=instance.date
+        )
+        calculate_salary(salary)
+    except Salary.DoesNotExist:
+        pass
+
+
+def get_cycle_end_date(start_date, working_days=26):
+    """
+    Calculate end_date by counting forward `working_days` non-Sunday days.
+    Sunday (weekday() == 6) is a weekly off and is NOT counted.
+    Returns the last working day of the cycle.
+    """
+    count = 0
+    current = start_date
+    while count < working_days:
+        if current.weekday() != 6:  # 6 = Sunday
+            count += 1
+        if count < working_days:
+            current += timedelta(days=1)
+    return current
+
+def get_cycle_for_date(joining_date, target_date, working_days=26):
+    """
+    Finds the start_date and end_date of the 26-non-Sunday-day cycle
+    that contains the given target_date.
+    """
+    current_start = joining_date
+    while True:
+        current_end = get_cycle_end_date(current_start, working_days)
+        if current_start <= target_date <= current_end:
+            return current_start, current_end
+        if target_date < current_start:
+            break
+        # Move to next cycle start (day after end)
+        current_start = current_end + timedelta(days=1)
+    return None, None
+
+def calculate_salary(salary):
+    # Protection: Do not modify locked payroll (already paid)
+    if salary.is_locked:
+        return
+    
+    employee = salary.employee
+
+    attendance = Attendance.objects.filter(
+        employee=employee,
+        date__range=[salary.start_date, salary.end_date]
+    )
+
+    # Get approved leaves that overlap with this salary cycle
+    leaves = EmployeeLeave.objects.filter(
+        employee=employee,
+        status="Approved",
+        start_date__lte=salary.end_date,
+        end_date__gte=salary.start_date
+    )
+
+    present_days = Decimal('0.00')
+    overtime_hours = 0
+    late_minutes = 0
+
+    daily_credits = {}
+
+    # Initialize days and auto-count Sundays in cycle as paid days
+    current_day = salary.start_date
+    while current_day <= salary.end_date:
+        if current_day.weekday() == 6:  # Sunday
+            daily_credits[current_day] = Decimal('1.00')
+        else:
+            daily_credits[current_day] = Decimal('0.00')
+        current_day += timedelta(days=1)
+
+    for a in attendance:
+        if a.date in daily_credits:
+            if a.status == "Present" or a.status == "WorkFromHome":
+                daily_credits[a.date] += Decimal('1.00')
+            elif a.status == "HalfDay":
+                daily_credits[a.date] += Decimal('0.50')
+
+        overtime_hours += a.overtime_hours
+        late_minutes += a.late_minutes
+
+    for l in leaves:
+        curr = max(l.start_date, salary.start_date)
+        end = min(l.end_date, salary.end_date)
+        while curr <= end:
+            if curr in daily_credits and curr.weekday() != 6:
+                if l.leave_type == 'Half Day':
+                    daily_credits[curr] += Decimal('0.50')
+                else:
+                    daily_credits[curr] += Decimal('1.00')
+            curr += timedelta(days=1)
+
+    # Sum all days, capping each day at 1.0 max
+    for day, credit in daily_credits.items():
+        if credit > Decimal('1.00'):
+            present_days += Decimal('1.00')
+        else:
+            present_days += credit
+
+    salary.present_days = present_days
+
+    # --- Fetch the correct UserSalary config for this cycle ---
+    # Pick the most recent salary record whose effective_date <= cycle start_date
+    user_sal_config = (
+        UserSalary.objects.filter(user=employee, effective_date__lte=salary.start_date)
+        .order_by('-effective_date', '-created_at')
+        .first()
+    )
+    # Fallback: first record at all if none is effective yet
+    if not user_sal_config:
+        user_sal_config = (
+            UserSalary.objects.filter(user=employee)
+            .order_by('effective_date', 'created_at')
+            .first()
+        )
+
+    base_sal = Decimal('26000.00')
+    w_days = 26
+
+    if user_sal_config:
+        base_sal = user_sal_config.base_salary
+        w_days = user_sal_config.working_days
+    elif hasattr(employee, 'profile'):
+        base_sal = employee.profile.basic_salary
+
+    salary.basic = base_sal
+    salary.working_days = w_days
+
+    daily_salary = salary.basic / Decimal(str(salary.working_days)) if salary.working_days > 0 else Decimal('0.00')
+
+    overtime_pay = Decimal(str(overtime_hours)) * Decimal('100.00')
+    late_penalty = Decimal(str(late_minutes)) * Decimal('2.00')
+    
+    # Late penalty limit: penalty <= daily salary
+    if late_penalty > daily_salary:
+        late_penalty = daily_salary
+
+    salary.overtime_pay = overtime_pay
+    salary.late_deduction = late_penalty
+
+    salary.total_salary = (
+        (Decimal(str(present_days)) * daily_salary)
+        + salary.overtime_pay
+        + salary.bonus
+        - salary.late_deduction
+        - salary.advance
+        - salary.deductions
+    )
+
+    salary.save()
+
+@receiver(post_save, sender=Attendance)
+def update_salary(sender, instance, **kwargs):
+    employee = instance.employee
+    
+    joining_date = None
+    # Get joining_date from the earliest UserSalary record for this user
+    earliest_sal = (
+        UserSalary.objects.filter(user=employee)
+        .order_by('effective_date', 'created_at')
+        .first()
+    )
+    if earliest_sal and earliest_sal.joining_date:
+        joining_date = earliest_sal.joining_date
+    
+    # Fallback to Employee profile
+    if not joining_date and hasattr(employee, 'profile'):
+        joining_date = employee.profile.joining_date
+
+    if not joining_date:
+        return
+
+    today = instance.date
+    # Calculate which cycle the attendance date falls in (skipping Sundays)
+    w_days_temp = 26
+    sal_config_temp = (
+        UserSalary.objects.filter(user=employee, effective_date__lte=today)
+        .order_by('-effective_date', '-created_at')
+        .first()
+    )
+    if sal_config_temp:
+        w_days_temp = sal_config_temp.working_days
+    
+    start_date, end_date = get_cycle_for_date(joining_date, today, w_days_temp)
+    if not start_date:
+        return
+
+    # Get basic salary and working days for this cycle
+    sal_config = (
+        UserSalary.objects.filter(user=employee, effective_date__lte=start_date)
+        .order_by('-effective_date', '-created_at')
+        .first()
+    ) or (
+        UserSalary.objects.filter(user=employee)
+        .order_by('effective_date', 'created_at')
+        .first()
+    )
+
+    basic_sal = Decimal('26000.00')
+    w_days = 26
+
+    if sal_config:
+        basic_sal = sal_config.base_salary
+        w_days = sal_config.working_days
+    elif hasattr(employee, 'profile'):
+        basic_sal = employee.profile.basic_salary
+
+    salary, created = Salary.objects.get_or_create(
+        employee=employee,
+        start_date=start_date,
+        end_date=end_date,
+        defaults={
+            "basic": basic_sal,
+            "working_days": w_days
+        }
+    )
+
+    calculate_salary(salary)
+
+def generate_salary_records(employee, joining_date):
+    """
+    Auto-generates all 26-day salary cycles from joining_date to today.
+    Uses the correct UserSalary config (based on effective_date) for each cycle.
+    """
+    today = timezone.now().date()
+    current_start = joining_date
+    
+    # Get default working_days from earliest salary config
+    earliest_sal = (
+        UserSalary.objects.filter(user=employee)
+        .order_by('effective_date', 'created_at')
+        .first()
+    )
+    default_w_days = earliest_sal.working_days if earliest_sal else 26
+
+    while current_start <= today:
+        current_end = get_cycle_end_date(current_start, default_w_days)
+        
+        # Find the correct salary config for this cycle
+        sal_config = (
+            UserSalary.objects.filter(user=employee, effective_date__lte=current_start)
+            .order_by('-effective_date', '-created_at')
+            .first()
+        ) or earliest_sal
+
+        basic_sal = sal_config.base_salary if sal_config else Decimal('26000.00')
+        w_days = sal_config.working_days if sal_config else 26
+
+        salary, created = Salary.objects.get_or_create(
+            employee=employee,
+            start_date=current_start,
+            end_date=current_end,
+            defaults={
+                "basic": basic_sal,
+                "working_days": w_days
+            }
+        )
+        calculate_salary(salary)
+        
+        # Next cycle starts the day after the end
+        current_start = current_end + timedelta(days=1)
+
+@receiver(post_save, sender=UserSalary)
+def auto_generate_cycles(sender, instance, **kwargs):
+    """
+    Auto-generate salary cycles when a new UserSalary record is created.
+    
+    IMPORTANT: We only generate FUTURE cycles, NOT recalculate old payroll.
+    Old payroll records must NEVER change (industry standard).
+    """
+    user = instance.user
+    # Get joining_date from the earliest UserSalary record for this user
+    joining_date = (
+        UserSalary.objects.filter(user=user)
+        .order_by('effective_date', 'created_at')
+        .values_list('joining_date', flat=True)
+        .first()
+    )
+    if joining_date:
+        # ONLY generate missing salary cycles from joining_date to today
+        generate_salary_records(user, joining_date)
+        
+        # DO NOT recalculate old payroll records
+        # This ensures old payroll is never modified (industry-standard)
+
+
+@receiver(post_save, sender=SalaryIncrement)
+def create_user_salary_on_increment(sender, instance, **kwargs):
+    """
+    When salary increment is created, automatically create/update UserSalary record.
+    This ensures the new salary is used for future payroll cycles.
+    """
+    # Get existing UserSalary for this employee to get joining_date
+    existing_salary = (
+        UserSalary.objects.filter(user=instance.employee)
+        .order_by('effective_date')
+        .first()
+    )
+    
+    if existing_salary:
+        # Create new UserSalary with incremented salary
+        UserSalary.objects.create(
+            user=instance.employee,
+            base_salary=instance.new_salary,
+            working_days=existing_salary.working_days,
+            joining_date=existing_salary.joining_date,
+            effective_date=instance.effective_date
+        )
+

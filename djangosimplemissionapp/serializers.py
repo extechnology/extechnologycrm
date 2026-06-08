@@ -9,7 +9,7 @@ from .models import (
     Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,
     ProjectServiceTeam,ProjectServiceMember,ProjectDocument,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
-    Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,
+    Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,SalaryIncrement,
     ClientAdvance,ProjectExbot,Lead,FollowUp,Schedule
 )
 class PermissionSerializer(serializers.ModelSerializer):
@@ -1025,9 +1025,36 @@ class NotificationSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class EmployeeLeaveSerializer(serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+    project_names = serializers.SerializerMethodField()
+
     class Meta:
         model = EmployeeLeave
         fields = '__all__'
+
+    def get_employee_name(self, obj):
+        if obj.employee.first_name or obj.employee.last_name:
+            return f"{obj.employee.first_name} {obj.employee.last_name}".strip()
+        return obj.employee.username
+
+    def get_project_names(self, obj):
+        from .models import ProjectTeamMember
+        memberships = ProjectTeamMember.objects.filter(
+            employee=obj.employee
+        ).select_related('project')
+        
+        projects = []
+        for m in memberships:
+            # We assume project model has a name field. Sometimes it's in project_base_informations.
+            # Let's handle both cases just in case, but usually m.project.name works if defined.
+            if hasattr(m.project, 'name') and m.project.name:
+                projects.append(m.project.name)
+            elif hasattr(m.project, 'project_base_informations'):
+                base_info = m.project.project_base_informations.first()
+                if base_info and base_info.name:
+                    projects.append(base_info.name)
+        
+        return ", ".join(set(projects)) if projects else "No Project"
 
 class CompanySerializer(serializers.ModelSerializer):
     class Meta:
@@ -1043,11 +1070,13 @@ class EmployeeSalarySummarySerializer(serializers.ModelSerializer):
     total_paid_amount = serializers.SerializerMethodField()
     total_unpaid_amount = serializers.SerializerMethodField()
     record_count = serializers.SerializerMethodField()
+    paid_count = serializers.SerializerMethodField()
+    unpaid_count = serializers.SerializerMethodField()
     last_payment_date = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'first_name', 'last_name', 'total_paid_amount', 'total_unpaid_amount', 'record_count', 'last_payment_date']
+        fields = ['id', 'username', 'first_name', 'last_name', 'total_paid_amount', 'total_unpaid_amount', 'record_count', 'paid_count', 'unpaid_count', 'last_payment_date']
 
     def get_total_paid_amount(self, obj):
         from .models import Salary
@@ -1059,6 +1088,12 @@ class EmployeeSalarySummarySerializer(serializers.ModelSerializer):
 
     def get_record_count(self, obj):
         return obj.salaries.count()
+
+    def get_paid_count(self, obj):
+        return obj.salaries.filter(status='Paid').count()
+
+    def get_unpaid_count(self, obj):
+        return obj.salaries.filter(status='Unpaid').count()
 
     def get_last_payment_date(self, obj):
         last_salary = obj.salaries.order_by('-end_date').first()
@@ -1077,12 +1112,14 @@ class SalarySerializer(serializers.ModelSerializer):
             'id', 'employee', 'employee_name', 'start_date', 'end_date', 
             'basic', 'working_days', 'present_days', 'absent_days', 'overtime_pay', 
             'late_deduction', 'bonus', 'advance', 'deductions', 
-            'total_salary', 'status', 'created_at'
+            'total_salary', 'gross_salary', 'total_deductions', 'net_salary',
+            'status', 'is_locked', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['working_days', 'present_days', 'total_salary', 'overtime_pay', 'late_deduction']
+        read_only_fields = ['working_days', 'present_days', 'total_salary', 'overtime_pay', 'late_deduction', 'gross_salary', 'total_deductions', 'net_salary', 'is_locked', 'created_at', 'updated_at']
 
 class AttendanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
+    project_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
@@ -1093,6 +1130,19 @@ class AttendanceSerializer(serializers.ModelSerializer):
             return f"{obj.employee.first_name} {obj.employee.last_name}".strip()
         return obj.employee.username
 
+    def get_project_names(self, obj):
+        from .models import ProjectTeamMember
+        memberships = ProjectTeamMember.objects.filter(
+            employee=obj.employee
+        ).select_related('project')
+        
+        projects = []
+        for m in memberships:
+            if m.project and m.project.name:
+                projects.append(m.project.name)
+        
+        return ", ".join(set(projects)) if projects else "No Project"
+
     def validate(self, attrs):
         request = self.context.get('request')
         if request and 'approval_status' in attrs:
@@ -1102,10 +1152,42 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
 class UserSalarySerializer(serializers.ModelSerializer):
     username = serializers.ReadOnlyField(source='user.username')
+    next_salary_day = serializers.SerializerMethodField()
+
+    def get_next_salary_day(self, obj):
+        """Calculate next salary day based on joining_date and working_days cycle"""
+        from .models import get_cycle_for_date
+        from django.utils import timezone
+        
+        if not obj.joining_date:
+            return None
+        
+        today = timezone.now().date()
+        working_days = obj.working_days or 26
+        
+        start_date, end_date = get_cycle_for_date(obj.joining_date, today, working_days)
+        
+        if end_date:
+            return end_date.isoformat()
+        return None
 
     class Meta:
         model = UserSalary
-        fields = ['id', 'user', 'username', 'base_salary', 'working_days', 'joining_date', 'created_at', 'updated_at']
+        fields = ['id', 'user', 'username', 'base_salary', 'working_days', 'joining_date', 'effective_date', 'next_salary_day', 'created_at', 'updated_at']
+
+
+class SalaryIncrementSerializer(serializers.ModelSerializer):
+    employee_name = serializers.ReadOnlyField(source='employee.username')
+    created_by_name = serializers.ReadOnlyField(source='created_by.username')
+
+    class Meta:
+        model = SalaryIncrement
+        fields = [
+            'id', 'employee', 'employee_name', 'old_salary', 'increment_amount', 
+            'new_salary', 'effective_date', 'remarks', 'created_by', 'created_by_name',
+            'created_at'
+        ]
+        read_only_fields = ['created_at']
 
 class EmployeeSerializer(serializers.ModelSerializer):
 

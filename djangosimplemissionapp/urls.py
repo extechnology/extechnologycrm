@@ -31,7 +31,7 @@ from .views import (
     SalaryListCreateAPIView, SalaryDetailAPIView, EmployeeSalarySummaryListAPIView,
     AttendanceListCreateAPIView, AttendanceDetailAPIView,
     EmployeeListCreateAPIView, EmployeeDetailAPIView,
-    UserSalaryListCreateAPIView, UserSalaryDetailAPIView,
+    UserSalaryListCreateAPIView, UserSalaryDetailAPIView, SalaryIncrementListCreateAPIView, SalaryIncrementDetailAPIView,
     OtherIncomeListCreateAPIView, OtherIncomeDetailAPIView,
     OtherExpenseListCreateAPIView, OtherExpenseDetailAPIView,
     UserDesignationsAPIView,
@@ -145,6 +145,8 @@ urlpatterns = [
     path('api/employees/<int:pk>/', EmployeeDetailAPIView.as_view(), name='api-employee-detail'),
     path('api/user-salaries/', UserSalaryListCreateAPIView.as_view(), name='api-user-salary-list-create'),
     path('api/user-salaries/<int:pk>/', UserSalaryDetailAPIView.as_view(), name='api-user-salary-detail'),
+    path('api/salary-increments/', SalaryIncrementListCreateAPIView.as_view(), name='api-salary-increment-list-create'),
+    path('api/salary-increments/<int:pk>/', SalaryIncrementDetailAPIView.as_view(), name='api-salary-increment-detail'),
     path('api/other-incomes/', OtherIncomeListCreateAPIView.as_view(), name='api-other-income-list-create'),
 
     path('api/other-incomes/<int:pk>/', OtherIncomeDetailAPIView.as_view(), name='api-other-income-detail'),

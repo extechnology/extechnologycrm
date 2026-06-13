@@ -1,10 +1,11 @@
 from urllib import request
 
 from django.contrib.auth.models import Permission
-from rest_framework import views, viewsets, filters
+from rest_framework import views, viewsets, filters, serializers
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView, ListAPIView
+from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
 from django.db.models import Q, Subquery, OuterRef
 from .models import (
@@ -13,7 +14,7 @@ from .models import (
     Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,ProjectServiceMember,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,ProjectDocument,
-    ClientAdvance, UserSalary, SalaryIncrement,ProjectExbot,Lead,FollowUp,Schedule,SystemAuditLog
+    ClientAdvance, UserSalary, SalaryIncrement,ProjectExbot,Lead,FollowUp,Schedule,SystemAuditLog,LoginUserDetails,Device
 )
   
 from .serializers import (
@@ -25,7 +26,7 @@ from .serializers import (
     EmployeeDailyActivitySerializer,ActivityLogSerializer,InvoiceSerializer,InvoiceItemSerializer,PaymentSerializer,ActivityExceedCommentSerializer,
     NotificationSerializer,EmployeeLeaveSerializer,CompanySerializer,CompanyProfileSerializer,SalarySerializer,AttendanceSerializer,EmployeeSerializer,OtherIncomeSerializer,OtherExpenseSerializer,RoleSerializer, PermissionSerializer,
     ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer, SalaryIncrementSerializer,ProjectExbotSerializer,
-    LeadSerializer, FollowUpSerializer, ScheduleSerializer, EmployeeSalarySummarySerializer
+    LeadSerializer, FollowUpSerializer, ScheduleSerializer, EmployeeSalarySummarySerializer, LoginUserDetailsSerializer, DeviceSerializer
 )
 
 from rest_framework.decorators import action
@@ -54,11 +55,6 @@ class UserListAPIView(views.APIView):
     def get(self, request):
         # Admins or users with specific permission can see all users
         is_privileged = any(role.upper() in ['SUPERADMIN', 'ADMIN', 'BILLING'] for role in request.user.role_names) or \
-                        request.user.has_perm('djangosimplemissionapp.view_all_employee_performance') or \
-                        request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
-                        request.user.has_perm('djangosimplemissionapp.view_all_leads') or \
-                        request.user.has_perm('djangosimplemissionapp.view_own_leads') or \
-                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance') or \
                         request.user.has_perm('djangosimplemissionapp.viewall_user') 
         
         
@@ -208,6 +204,11 @@ class CurrentUserView(views.APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    device_id = serializers.CharField(required=False, allow_blank=True)
+    device_name = serializers.CharField(required=False, allow_blank=True)
+    device_type = serializers.CharField(required=False, allow_blank=True)
+    device_info = serializers.JSONField(required=False, allow_null=True)
+    
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -217,6 +218,72 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         user = self.user
+        
+        # Device-lock validation
+        device_id = attrs.get('device_id') or self.context.get('request').data.get('device_id')
+        device_name = attrs.get('device_name') or self.context.get('request').data.get('device_name')
+        device_type = attrs.get('device_type') or self.context.get('request').data.get('device_type', 'other')
+        device_info = attrs.get('device_info') or self.context.get('request').data.get('device_info', {})
+        
+        # Check if user has any approved devices
+        has_approved_devices = user.devices.filter(is_approved=True).exists()
+        
+        if device_id:
+            from .models import Device
+            from django.utils import timezone
+            
+            try:
+                device = Device.objects.get(device_id=device_id, user=user)
+                
+                # Check if device is approved
+                if not device.is_approved:
+                    raise serializers.ValidationError(
+                        'This device is not approved. Please contact your administrator to approve this device.',
+                        code='device_not_approved'
+                    )
+                
+                # Update device login info
+                device.last_login = timezone.now()
+                device.login_count += 1
+                device.save(update_fields=['last_login', 'login_count'])
+                
+            except Device.DoesNotExist:
+                # Device doesn't exist - create it (pending approval)
+                if has_approved_devices:
+                    # User has approved devices, so new device needs approval
+                    Device.objects.create(
+                        user=user,
+                        device_id=device_id,
+                        device_name=device_name or f"New {device_type.capitalize()} Device",
+                        device_type=device_type,
+                        device_info=device_info or {},
+                        is_approved=False
+                    )
+                    raise serializers.ValidationError(
+                        'New device detected. Your device has been registered and is awaiting admin approval. Please contact your administrator.',
+                        code='device_pending_approval'
+                    )
+                else:
+                    # First device - auto-approve for now
+                    from .models import Device
+                    device = Device.objects.create(
+                        user=user,
+                        device_id=device_id,
+                        device_name=device_name or f"Device {device_type}",
+                        device_type=device_type,
+                        device_info=device_info or {},
+                        is_approved=True,  # Auto-approve first device
+                        approved_by=None  # System auto-approval
+                    )
+                    device.last_login = timezone.now()
+                    device.login_count = 1
+                    device.save(update_fields=['last_login', 'login_count'])
+        elif has_approved_devices:
+            # User has approved devices but didn't provide device_id
+            raise serializers.ValidationError(
+                'Device ID is required. This account requires device approval.',
+                code='device_id_required'
+            )
 
         data['is_logged_in'] = True
         data['role'] = user.role.name if user.role else None
@@ -239,8 +306,37 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
         return data
 
+
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+    
+    def post(self, request, *args, **kwargs):
+        """
+        Override post to record login attempts in LoginUserDetails model.
+        """
+        from .utils import record_user_login
+        
+        response = super().post(request, *args, **kwargs)
+        
+        # Record successful login
+        if response.status_code == 200:
+            try:
+                username = request.data.get('username')
+                user = User.objects.get(username=username)
+                record_user_login(user, request, login_status='SUCCESS')
+            except Exception as e:
+                # Log the error but don't fail the login
+                print(f"Error recording login: {str(e)}")
+        else:
+            # Record failed login attempt
+            try:
+                username = request.data.get('username')
+                user = User.objects.get(username=username)
+                record_user_login(user, request, login_status='FAILED', notes='Invalid credentials')
+            except:
+                pass  # User doesn't exist, don't record
+        
+        return response
 
 class ChangePasswordView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -254,7 +350,172 @@ class ChangePasswordView(views.APIView):
                 user.save()
                 return Response({'status': 'password set'}, status=status.HTTP_200_OK)
             return Response({'old_password': ['Wrong password.']}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class LogoutView(views.APIView):
+    """
+    Logout view that records logout time and session duration in LoginUserDetails.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .utils import record_user_logout
+        
+        try:
+            # Record logout
+            record_user_logout(request.user)
+            
+            return Response({
+                'status': 'logout successful',
+                'message': 'You have been logged out successfully'
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'status': 'logout error',
+                'message': f'Logout recorded with error: {str(e)}'
+            }, status=status.HTTP_200_OK)  # Still return 200 even if there's an error
+
+
+class DeviceListCreateAPIView(ListCreateAPIView):
+    """
+    List all devices for the current user or register a new device.
+    POST: Register a new device (will be pending approval if user has other approved devices)
+    GET: List all devices for the current user
+    """
+    serializer_class = DeviceSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Users can only see their own devices, admins can see all"""
+        user = self.request.user
+        if user.is_superuser or user.has_perm('djangosimplemissionapp.view_all_devices'):
+            return Device.objects.all()
+        return user.devices.all()
+    
+    def create(self, request, *args, **kwargs):
+        """Register a new device"""
+        device_id = request.data.get('device_id')
+        device_name = request.data.get('device_name')
+        device_type = request.data.get('device_type', 'other')
+        device_info = request.data.get('device_info', {})
+        
+        if not device_id:
+            return Response({'error': 'device_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Check if device already exists for this user
+            device = Device.objects.get(device_id=device_id, user=request.user)
+            return Response({
+                'error': 'Device already registered',
+                'device': DeviceSerializer(device).data
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Device.DoesNotExist:
+            # Create new device
+            has_approved_devices = request.user.devices.filter(is_approved=True).exists()
+            
+            # First device is auto-approved, subsequent devices need admin approval
+            is_approved = not has_approved_devices
+            
+            device = Device.objects.create(
+                user=request.user,
+                device_id=device_id,
+                device_name=device_name or f"Device {device_type}",
+                device_type=device_type,
+                device_info=device_info or {},
+                is_approved=is_approved
+            )
+            
+            serializer = self.get_serializer(device)
+            return Response(
+                {
+                    'message': 'Device registered successfully' if not is_approved else 'First device auto-approved',
+                    'device': serializer.data
+                },
+                status=status.HTTP_201_CREATED
+            )
+
+
+class DeviceDetailAPIView(RetrieveUpdateDestroyAPIView):
+    """
+    Retrieve, update, or delete a specific device.
+    """
+    serializer_class = DeviceSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = 'id'
+    
+    def get_queryset(self):
+        """Users can only access their own devices"""
+        user = self.request.user
+        if user.is_superuser or user.has_perm('djangosimplemissionapp.view_all_devices'):
+            return Device.objects.all()
+        return user.devices.all()
+    
+    def perform_destroy(self, instance):
+        """Delete a device"""
+        # Prevent deletion of all devices - user must have at least one
+        if instance.user.devices.count() == 1:
+            raise PermissionDenied('Cannot delete the only device. Register another device first.')
+        instance.delete()
+
+
+class DeviceApprovalAPIView(views.APIView):
+    """
+    Admin endpoint to approve or reject devices for users.
+    POST with action='approve' or action='reject'
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, device_id):
+        # Check if user has permission to manage devices
+        if not (request.user.is_superuser or request.user.has_perm('djangosimplemissionapp.manage_device_approvals')):
+            return Response(
+                {'error': 'You do not have permission to approve/reject devices'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            device = Device.objects.get(id=device_id)
+        except Device.DoesNotExist:
+            return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        action = request.data.get('action')  # 'approve' or 'reject'
+        reason = request.data.get('reason', '')
+        
+        if action == 'approve':
+            device.approve(request.user, reason)
+            return Response({
+                'message': 'Device approved successfully',
+                'device': DeviceSerializer(device).data
+            }, status=status.HTTP_200_OK)
+        
+        elif action == 'reject':
+            device.reject(request.user, reason)
+            return Response({
+                'message': 'Device rejected successfully',
+                'device': DeviceSerializer(device).data
+            }, status=status.HTTP_200_OK)
+        
+        else:
+            return Response(
+                {'error': "action must be 'approve' or 'reject'"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class PendingDevicesAPIView(ListAPIView):
+    """
+    Admin endpoint to view all pending device approvals.
+    """
+    serializer_class = DeviceSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        # Check permission
+        if not (self.request.user.is_superuser or self.request.user.has_perm('djangosimplemissionapp.manage_device_approvals')):
+            return Device.objects.none()
+        
+        return Device.objects.filter(is_approved=False).order_by('-created_at')
+
 
 class RoleListCreateAPIView(ListCreateAPIView):
     queryset = Role.objects.all()
@@ -741,6 +1002,17 @@ class TeamListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'team_lead__username']
 
+    def check_permissions(self, request):
+        # Check create permission
+        if request.method == 'POST' and not request.user.has_perm('djangosimplemissionapp.add_team'):
+            self.permission_denied(request, "You don't have permission to create teams.")
+        
+        # Check view permission
+        if request.method == 'GET' and not request.user.has_perm('djangosimplemissionapp.view_team'):
+            self.permission_denied(request, "You don't have permission to view teams.")
+        
+        super().check_permissions(request)
+
     def get_queryset(self):
         user = self.request.user
         if not user.has_role('SuperAdmin') and not user.has_role('Admin'):
@@ -751,7 +1023,18 @@ class TeamListCreateAPIView(ListCreateAPIView):
 class TeamDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Team.objects.all()
     serializer_class = TeamSerializer
-    permission_classes = [IsAuthenticated]          
+    permission_classes = [IsAuthenticated]
+    
+    def check_permissions(self, request):
+        # Check delete permission
+        if request.method == 'DELETE' and not request.user.has_perm('djangosimplemissionapp.delete_team'):
+            self.permission_denied(request, "You don't have permission to delete teams.")
+        
+        # Check update permission
+        if request.method in ['PUT', 'PATCH'] and not request.user.has_perm('djangosimplemissionapp.change_team'):
+            self.permission_denied(request, "You don't have permission to edit teams.")
+        
+        super().check_permissions(request)          
 
 class ProjectTeamListCreateAPIView(ListCreateAPIView):
     queryset = ProjectTeam.objects.all()
@@ -2037,6 +2320,8 @@ class AttendanceListCreateAPIView(ListCreateAPIView):
         date = self.request.query_params.get('date')
         status_filter = self.request.query_params.get('status')
         approval_status = self.request.query_params.get('approval_status')
+        check_in_from = self.request.query_params.get('check_in_from')
+        check_in_to = self.request.query_params.get('check_in_to')
 
         if date:
             queryset = queryset.filter(date=date)
@@ -2051,7 +2336,29 @@ class AttendanceListCreateAPIView(ListCreateAPIView):
             
         if approval_status:
             queryset = queryset.filter(approval_status=approval_status)
-            
+        
+        # Filter by check_in time range
+        if check_in_from:
+            # Ensure check_in_from is in HH:MM:SS format
+            try:
+                if check_in_from and len(check_in_from.split(':')) == 2:  # HH:MM format
+                    check_in_from = f"{check_in_from}:00"
+                print(f"DEBUG: Filtering by check_in_from = {check_in_from}")
+                queryset = queryset.filter(check_in__gte=check_in_from)
+            except Exception as e:
+                print(f"Error parsing check_in_from: {e}")
+                
+        if check_in_to:
+            # Ensure check_in_to is in HH:MM:SS format
+            try:
+                if check_in_to and len(check_in_to.split(':')) == 2:  # HH:MM format
+                    check_in_to = f"{check_in_to}:00"
+                print(f"DEBUG: Filtering by check_in_to = {check_in_to}")
+                queryset = queryset.filter(check_in__lte=check_in_to)
+            except Exception as e:
+                print(f"Error parsing check_in_to: {e}")
+        
+        print(f"DEBUG: Final queryset count = {queryset.count()}")
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -2084,6 +2391,493 @@ class AttendanceDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Attendance.objects.all()
     serializer_class = AttendanceSerializer
     permission_classes = [IsAuthenticated]
+
+class AttendanceExportAPIView(APIView):
+    """Export attendance records to Excel or Word format"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """
+        Export filtered attendance records
+        Query params: export_format (excel/word), status, approval_status, start_date, end_date, employee, check_in_from, check_in_to
+        """
+        from datetime import datetime
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from django.http import FileResponse
+        import io
+
+        # Get format from request (renamed to export_format to avoid DRF content negotiation)
+        export_format = request.query_params.get('export_format', 'excel').lower()
+        if export_format not in ['excel', 'word']:
+            return Response({'error': 'Invalid export_format. Use "excel" or "word"'}, status=400)
+
+        # Get filtered queryset using same logic as list view
+        user = request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_attendance')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_attendance') or can_view_all
+
+        if not (can_view_all or can_view_own):
+            return Response({'error': 'You do not have permission to export attendance'}, status=403)
+
+        queryset = Attendance.objects.all().order_by('-date')
+
+        if not can_view_all:
+            queryset = queryset.filter(employee=user)
+        else:
+            employee_id = request.query_params.get('employee')
+            if employee_id:
+                queryset = queryset.filter(employee_id=employee_id)
+
+        # Apply filters
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        status_filter = request.query_params.get('status')
+        approval_status = request.query_params.get('approval_status')
+        check_in_from = request.query_params.get('check_in_from')
+        check_in_to = request.query_params.get('check_in_to')
+
+        if start_date:
+            queryset = queryset.filter(date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(date__lte=end_date)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if approval_status:
+            queryset = queryset.filter(approval_status=approval_status)
+        if check_in_from:
+            if len(check_in_from.split(':')) == 2:
+                check_in_from = f"{check_in_from}:00"
+            queryset = queryset.filter(check_in__gte=check_in_from)
+        if check_in_to:
+            if len(check_in_to.split(':')) == 2:
+                check_in_to = f"{check_in_to}:00"
+            queryset = queryset.filter(check_in__lte=check_in_to)
+
+        if export_format == 'excel':
+            return self._export_to_excel(queryset)
+        else:
+            return self._export_to_word(queryset)
+
+    def _export_to_excel(self, queryset):
+        """Export to Excel format"""
+        from datetime import datetime
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from django.http import FileResponse
+        import io
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Attendance"
+
+        # Define styles
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        center_alignment = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Headers
+        headers = ['#', 'Employee Name', 'Employee ID', 'Date', 'Check In', 'Check Out', 'Working Hours', 'Status', 'Approval Status']
+        worksheet.append(headers)
+
+        # Format header row
+        for cell in worksheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        # Data
+        for idx, record in enumerate(queryset, 1):
+            employee_name = f"{record.employee.first_name} {record.employee.last_name}".strip() or record.employee.username
+            check_in = str(record.check_in).split('.')[0] if record.check_in else '—'
+            check_out = str(record.check_out).split('.')[0] if record.check_out else '—'
+            working_hours = record.get_total_working_hours() if hasattr(record, 'get_total_working_hours') else 0
+
+            row = [
+                idx,
+                employee_name,
+                record.employee_id,
+                record.date.strftime('%Y-%m-%d'),
+                check_in,
+                check_out,
+                f"{working_hours}h" if working_hours else "—",
+                record.status,
+                record.approval_status or 'Pending'
+            ]
+            worksheet.append(row)
+
+            # Format data cells
+            for cell in worksheet[idx + 1]:
+                cell.border = thin_border
+                cell.alignment = center_alignment if cell.column in [1, 4, 6, 7, 8, 9] else Alignment(horizontal="left", vertical="center")
+
+        # Adjust column widths
+        worksheet.column_dimensions['A'].width = 5
+        worksheet.column_dimensions['B'].width = 20
+        worksheet.column_dimensions['C'].width = 15
+        worksheet.column_dimensions['D'].width = 12
+        worksheet.column_dimensions['E'].width = 12
+        worksheet.column_dimensions['F'].width = 12
+        worksheet.column_dimensions['G'].width = 15
+        worksheet.column_dimensions['H'].width = 15
+        worksheet.column_dimensions['I'].width = 15
+
+        # Save to bytes
+        excel_file = io.BytesIO()
+        workbook.save(excel_file)
+        excel_file.seek(0)
+
+        filename = f"Attendance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return FileResponse(
+            excel_file,
+            as_attachment=True,
+            filename=filename,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+
+    def _export_to_word(self, queryset):
+        """Export to Word format"""
+        from datetime import datetime
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        from django.http import FileResponse
+        import io
+
+        document = Document()
+
+        # Add title
+        title = document.add_paragraph()
+        title_run = title.add_run("Attendance Report")
+        title_run.font.size = Pt(16)
+        title_run.font.bold = True
+        title_run.font.color.rgb = RGBColor(54, 96, 146)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Add date
+        date_para = document.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        document.add_paragraph()  # Blank line
+
+        # Create table
+        table = document.add_table(rows=1, cols=9)
+        table.style = 'Light Grid Accent 1'
+
+        # Add header row
+        header_cells = table.rows[0].cells
+        headers = ['#', 'Employee Name', 'Employee ID', 'Date', 'Check In', 'Check Out', 'Working Hours', 'Status', 'Approval Status']
+        for idx, header_text in enumerate(headers):
+            header_cells[idx].text = header_text
+            # Style header
+            for paragraph in header_cells[idx].paragraphs:
+                for run in paragraph.runs:
+                    run.font.bold = True
+                    run.font.color.rgb = RGBColor(255, 255, 255)
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # Set background color
+            shading_elm = OxmlElement('w:shd')
+            shading_elm.set(qn('w:fill'), '366092')
+            header_cells[idx]._element.get_or_add_tcPr().append(shading_elm)
+
+        # Add data rows
+        for idx, record in enumerate(queryset, 1):
+            row = table.add_row()
+            cells = row.cells
+
+            employee_name = f"{record.employee.first_name} {record.employee.last_name}".strip() or record.employee.username
+            check_in = str(record.check_in).split('.')[0] if record.check_in else '—'
+            check_out = str(record.check_out).split('.')[0] if record.check_out else '—'
+            working_hours = record.get_total_working_hours() if hasattr(record, 'get_total_working_hours') else 0
+
+            data = [
+                str(idx),
+                employee_name,
+                str(record.employee_id),
+                record.date.strftime('%Y-%m-%d'),
+                check_in,
+                check_out,
+                f"{working_hours}h" if working_hours else "—",
+                record.status,
+                record.approval_status or 'Pending'
+            ]
+
+            for cell_idx, cell_text in enumerate(data):
+                cells[cell_idx].text = cell_text
+                for paragraph in cells[cell_idx].paragraphs:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Save to bytes
+        word_file = io.BytesIO()
+        document.save(word_file)
+        word_file.seek(0)
+
+        filename = f"Attendance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        return FileResponse(
+            word_file,
+            as_attachment=True,
+            filename=filename,
+            content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+
+class EmployeeLeaveExportAPIView(APIView):
+    """Export employee leaves to Excel or Word format"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """
+        Export filtered leave records
+        Query params: export_format (excel/word), employee, start_date, end_date, status
+        """
+        from datetime import datetime
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from django.http import FileResponse
+        import io
+
+        # Get format from request
+        export_format = request.query_params.get('export_format', 'excel').lower()
+        if export_format not in ['excel', 'word']:
+            return Response({'error': 'Invalid export_format. Use "excel" or "word"'}, status=400)
+
+        # Get filtered queryset using same logic as list view
+        user = request.user
+        can_view_all = user.is_superuser or user.has_perm('djangosimplemissionapp.viewall_employeeleave')
+        can_view_own = user.has_perm('djangosimplemissionapp.viewown_employeeleave') or can_view_all
+
+        # For leaves, even basic permission allows viewing own leaves
+        if not (can_view_all or can_view_own or user.has_perm('djangosimplemissionapp.viewall_employeeleave')):
+            return Response({'error': 'You do not have permission to export leaves'}, status=403)
+
+        queryset = EmployeeLeave.objects.all().order_by('-start_date')
+
+        if not can_view_all:
+            queryset = queryset.filter(employee=user)
+        else:
+            employee_id = request.query_params.get('employee')
+            if employee_id:
+                queryset = queryset.filter(employee_id=employee_id)
+
+        # Apply filters
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        status_filter = request.query_params.get('status')
+        project_id = request.query_params.get('project')
+
+        if start_date:
+            queryset = queryset.filter(start_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(end_date__lte=end_date)
+        if status_filter:
+            queryset = queryset.filter(status__iexact=status_filter)
+        if project_id:
+            from .models import ProjectTeamMember
+            team_employees = ProjectTeamMember.objects.filter(
+                project_id=project_id,
+                status__in=['Pending', 'Progressing']
+            ).values_list('employee_id', flat=True)
+            queryset = queryset.filter(employee_id__in=team_employees)
+
+        if export_format == 'excel':
+            return self._export_to_excel(queryset)
+        else:
+            return self._export_to_word(queryset)
+
+    def _export_to_excel(self, queryset):
+        """Export to Excel format"""
+        from datetime import datetime
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from django.http import FileResponse
+        import io
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Leaves"
+
+        # Define styles
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        center_alignment = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Headers
+        headers = ['#', 'Employee Name', 'Employee ID', 'Start Date', 'End Date', 'Leave Type', 'Duration (Days)', 'Status', 'Description', 'Approved By']
+        worksheet.append(headers)
+
+        # Format header row
+        for cell in worksheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        # Data
+        for idx, record in enumerate(queryset, 1):
+            employee_name = f"{record.employee.first_name} {record.employee.last_name}".strip() or record.employee.username
+            approved_by_name = f"{record.approved_by.first_name} {record.approved_by.last_name}".strip() if record.approved_by else '—'
+            
+            # Calculate duration
+            duration = (record.end_date - record.start_date).days + 1
+            if record.leave_type == 'Half Day':
+                duration = 0.5
+
+            row = [
+                idx,
+                employee_name,
+                record.employee_id,
+                record.start_date.strftime('%Y-%m-%d'),
+                record.end_date.strftime('%Y-%m-%d'),
+                record.leave_type or 'Full Day',
+                f"{duration}" if duration > 0 else "—",
+                record.status or 'Pending',
+                record.description or '—',
+                approved_by_name
+            ]
+            worksheet.append(row)
+
+            # Format data cells
+            for cell in worksheet[idx + 1]:
+                cell.border = thin_border
+                cell.alignment = center_alignment if cell.column in [1, 4, 5, 6, 7, 8, 10] else Alignment(horizontal="left", vertical="center")
+
+        # Adjust column widths
+        worksheet.column_dimensions['A'].width = 5
+        worksheet.column_dimensions['B'].width = 20
+        worksheet.column_dimensions['C'].width = 15
+        worksheet.column_dimensions['D'].width = 12
+        worksheet.column_dimensions['E'].width = 12
+        worksheet.column_dimensions['F'].width = 15
+        worksheet.column_dimensions['G'].width = 15
+        worksheet.column_dimensions['H'].width = 12
+        worksheet.column_dimensions['I'].width = 25
+        worksheet.column_dimensions['J'].width = 15
+
+        # Save to bytes
+        excel_file = io.BytesIO()
+        workbook.save(excel_file)
+        excel_file.seek(0)
+
+        filename = f"Leaves_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return FileResponse(
+            excel_file,
+            as_attachment=True,
+            filename=filename,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+
+    def _export_to_word(self, queryset):
+        """Export to Word format"""
+        from datetime import datetime
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        from django.http import FileResponse
+        import io
+
+        document = Document()
+
+        # Add title
+        title = document.add_paragraph()
+        title_run = title.add_run("Employee Leaves Report")
+        title_run.font.size = Pt(16)
+        title_run.font.bold = True
+        title_run.font.color.rgb = RGBColor(54, 96, 146)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Add date
+        date_para = document.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        document.add_paragraph()  # Blank line
+
+        # Create table
+        table = document.add_table(rows=1, cols=10)
+        table.style = 'Light Grid Accent 1'
+
+        # Add header row
+        header_cells = table.rows[0].cells
+        headers = ['#', 'Employee Name', 'Employee ID', 'Start Date', 'End Date', 'Leave Type', 'Duration (Days)', 'Status', 'Description', 'Approved By']
+        for idx, header_text in enumerate(headers):
+            header_cells[idx].text = header_text
+            # Style header
+            for paragraph in header_cells[idx].paragraphs:
+                for run in paragraph.runs:
+                    run.font.bold = True
+                    run.font.color.rgb = RGBColor(255, 255, 255)
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # Set background color
+            shading_elm = OxmlElement('w:shd')
+            shading_elm.set(qn('w:fill'), '366092')
+            header_cells[idx]._element.get_or_add_tcPr().append(shading_elm)
+
+        # Add data rows
+        for idx, record in enumerate(queryset, 1):
+            row = table.add_row()
+            cells = row.cells
+
+            employee_name = f"{record.employee.first_name} {record.employee.last_name}".strip() or record.employee.username
+            approved_by_name = f"{record.approved_by.first_name} {record.approved_by.last_name}".strip() if record.approved_by else '—'
+            
+            # Calculate duration
+            duration = (record.end_date - record.start_date).days + 1
+            if record.leave_type == 'Half Day':
+                duration = 0.5
+
+            data = [
+                str(idx),
+                employee_name,
+                str(record.employee_id),
+                record.start_date.strftime('%Y-%m-%d'),
+                record.end_date.strftime('%Y-%m-%d'),
+                record.leave_type or 'Full Day',
+                f"{duration}" if duration > 0 else "—",
+                record.status or 'Pending',
+                record.description or '—',
+                approved_by_name
+            ]
+
+            for cell_idx, cell_text in enumerate(data):
+                cells[cell_idx].text = cell_text
+                for paragraph in cells[cell_idx].paragraphs:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Save to bytes
+        word_file = io.BytesIO()
+        document.save(word_file)
+        word_file.seek(0)
+
+        filename = f"Leaves_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        return FileResponse(
+            word_file,
+            as_attachment=True,
+            filename=filename,
+            content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
 
 class EmployeeListCreateAPIView(ListCreateAPIView):
     queryset = Employee.objects.all()
@@ -3037,4 +3831,226 @@ class ScheduleDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Schedule.objects.all()
     serializer_class = ScheduleSerializer
     permission_classes = [IsAuthenticated]
+
+
+class LoginHistoryListAPIView(ListCreateAPIView):
+    """
+    API endpoint to view user login history.
+    - GET: View all logins (admins) or own logins (regular users)
+    - Filters available: user_id, ip_address, device_type, login_status, date_range
+    """
+    serializer_class = LoginUserDetailsSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['ip_address', 'device_name', 'browser_name', 'os_name', 'country', 'city']
+    ordering_fields = ['login_time', 'logout_time', 'is_suspicious']
+    ordering = ['-login_time']
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = LoginUserDetails.objects.all()
+        
+        # Regular users can only see their own logins
+        if not user.is_superuser and not user.has_perm('djangosimplemissionapp.view_all_logins'):
+            queryset = queryset.filter(user=user)
+        
+        # Filter by user_id if provided (only admins can see other users)
+        user_id = self.request.query_params.get('user_id')
+        if user_id:
+            if user.is_superuser or user.has_perm('djangosimplemissionapp.view_all_logins'):
+                queryset = queryset.filter(user_id=user_id)
+            elif int(user_id) != user.id:
+                # Non-admin users cannot view other users' logins
+                return LoginUserDetails.objects.none()
+        
+        # Filter by device_type
+        device_type = self.request.query_params.get('device_type')
+        if device_type:
+            queryset = queryset.filter(device_type=device_type)
+        
+        # Filter by login_status
+        login_status = self.request.query_params.get('login_status')
+        if login_status:
+            queryset = queryset.filter(login_status=login_status)
+        
+        # Filter by IP address
+        ip_address = self.request.query_params.get('ip_address')
+        if ip_address:
+            queryset = queryset.filter(ip_address=ip_address)
+        
+        # Filter by suspicious flag
+        is_suspicious = self.request.query_params.get('is_suspicious')
+        if is_suspicious:
+            queryset = queryset.filter(is_suspicious=is_suspicious.lower() == 'true')
+        
+        # Filter by date range
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            from datetime import datetime
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                queryset = queryset.filter(login_time__gte=start_dt)
+            except:
+                pass
+        if end_date:
+            from datetime import datetime
+            try:
+                end_dt = datetime.fromisoformat(end_date)
+                queryset = queryset.filter(login_time__lte=end_dt)
+            except:
+                pass
+        
+        return queryset
+
+
+class LoginHistoryDetailAPIView(RetrieveUpdateDestroyAPIView):
+    """
+    API endpoint to view, update, or delete a specific login record.
+    Users can only access their own records unless they are admins.
+    """
+    queryset = LoginUserDetails.objects.all()
+    serializer_class = LoginUserDetailsSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = LoginUserDetails.objects.all()
+        
+        # Regular users can only see their own logins
+        if not user.is_superuser and not user.has_perm('djangosimplemissionapp.view_all_logins'):
+            queryset = queryset.filter(user=user)
+        
+        return queryset
+    
+    def perform_update(self, serializer):
+        """
+        Allow updating logout_time and suspicious flag.
+        """
+        instance = self.get_object()
+        
+        # Ensure users can only update their own records or admins
+        if instance.user != self.request.user and not self.request.user.is_superuser:
+            raise PermissionDenied("You cannot update other users' login records.")
+        
+        # Calculate session duration if logout_time is being set
+        if serializer.validated_data.get('logout_time') and not instance.logout_time:
+            from datetime import datetime
+            logout_time = serializer.validated_data['logout_time']
+            if logout_time:
+                instance.session_duration = logout_time - instance.login_time
+        
+        serializer.save()
+
+
+class CurrentUserLoginHistoryAPIView(views.APIView):
+    """
+    API endpoint for current user to view their own login history.
+    Provides a simple endpoint without filtering requirements.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get current user's login history with pagination"""
+        user = request.user
+        page = int(request.query_params.get('page', 1))
+        per_page = int(request.query_params.get('per_page', 10))
+        
+        logins = LoginUserDetails.objects.filter(user=user).order_by('-login_time')
+        
+        # Manual pagination
+        start = (page - 1) * per_page
+        end = start + per_page
+        
+        serializer = LoginUserDetailsSerializer(logins[start:end], many=True)
+        
+        return Response({
+            'count': logins.count(),
+            'page': page,
+            'per_page': per_page,
+            'total_pages': (logins.count() + per_page - 1) // per_page,
+            'results': serializer.data
+        })
+
+
+class SuspiciousLoginsAPIView(views.APIView):
+    """
+    API endpoint to view suspicious login attempts.
+    Only accessible to admins and superusers.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get all suspicious logins"""
+        user = request.user
+        
+        # Check permission
+        if not user.is_superuser and not user.has_perm('djangosimplemissionapp.view_suspicious_logins'):
+            raise PermissionDenied("You don't have permission to view suspicious logins.")
+        
+        suspicious_logins = LoginUserDetails.objects.filter(is_suspicious=True).order_by('-login_time')
+        
+        page = int(request.query_params.get('page', 1))
+        per_page = int(request.query_params.get('per_page', 10))
+        
+        start = (page - 1) * per_page
+        end = start + per_page
+        
+        serializer = LoginUserDetailsSerializer(suspicious_logins[start:end], many=True)
+        
+        return Response({
+            'count': suspicious_logins.count(),
+            'page': page,
+            'per_page': per_page,
+            'total_pages': (suspicious_logins.count() + per_page - 1) // per_page,
+            'results': serializer.data
+        })
+
+
+class LoginUserDetailsListCreateAPIView(ListCreateAPIView):
+    """
+    List all login details or create a new login record.
+    """
+    queryset = LoginUserDetails.objects.all()
+    serializer_class = LoginUserDetailsSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['user__username', 'ip_address', 'device_name', 'browser_name']
+
+    def get_queryset(self):
+        queryset = LoginUserDetails.objects.all().order_by('-login_time')
+        
+        # Filter by user if specified
+        user_id = self.request.query_params.get('user_id')
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        
+        # Filter by login status (case-insensitive)
+        login_status = self.request.query_params.get('login_status')
+        if login_status:
+            queryset = queryset.filter(login_status__iexact=login_status)
+        
+        # Filter by device type (case-insensitive)
+        device_type = self.request.query_params.get('device_type')
+        if device_type:
+            queryset = queryset.filter(device_type__iexact=device_type)
+        
+        # Filter by suspicious flag
+        is_suspicious = self.request.query_params.get('is_suspicious')
+        if is_suspicious:
+            queryset = queryset.filter(is_suspicious=is_suspicious.lower() == 'true')
+        
+        return queryset
+
+
+class LoginUserDetailsDetailAPIView(RetrieveUpdateDestroyAPIView):
+    """
+    Retrieve, update, or delete a specific login detail record.
+    """
+    queryset = LoginUserDetails.objects.all()
+    serializer_class = LoginUserDetailsSerializer
+    permission_classes = [IsAuthenticated]
+
 

@@ -164,6 +164,67 @@ def update_user_permissions(sender, instance, created, **kwargs):
     if not created:
         instance.sync_permissions()
 
+class Device(models.Model):
+    """
+    Model to track and manage user devices for device-lock feature.
+    Admins can approve devices for users to restrict access to approved devices only.
+    """
+    DEVICE_TYPE_CHOICES = [
+        ('laptop', 'Laptop'),
+        ('mobile', 'Mobile'),
+        ('tablet', 'Tablet'),
+        ('desktop', 'Desktop'),
+        ('other', 'Other'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='devices')
+    device_name = models.CharField(max_length=255, help_text="User-friendly device name (e.g., 'My MacBook')")
+    device_id = models.CharField(max_length=255, help_text="Unique device identifier (MAC address, hardware ID, etc.)")
+    device_type = models.CharField(max_length=50, choices=DEVICE_TYPE_CHOICES, default='other')
+    
+    # Approval workflow
+    is_approved = models.BooleanField(default=False, help_text="Is this device approved for login?")
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_devices', help_text="Admin who approved this device")
+    approved_at = models.DateTimeField(null=True, blank=True, help_text="When was this device approved?")
+    approval_reason = models.TextField(blank=True, null=True, help_text="Reason for approval/rejection")
+    
+    # Login tracking
+    last_login = models.DateTimeField(null=True, blank=True)
+    login_count = models.IntegerField(default=0)
+    
+    # Metadata
+    device_info = models.JSONField(default=dict, blank=True, help_text="Additional device information (OS, browser, etc.)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ('user', 'device_id')
+        verbose_name = 'User Device'
+        verbose_name_plural = 'User Devices'
+        permissions = [
+            ("manage_device_approvals", "Can approve/reject user devices"),
+            ("view_all_devices", "Can view all user devices"),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.device_name} ({self.device_type})"
+    
+    def approve(self, approved_by_user, reason=""):
+        """Approve a device for login"""
+        self.is_approved = True
+        self.approved_by = approved_by_user
+        self.approved_at = timezone.now()
+        self.approval_reason = reason
+        self.save()
+    
+    def reject(self, approved_by_user, reason=""):
+        """Reject a device"""
+        self.is_approved = False
+        self.approved_by = approved_by_user
+        self.approved_at = timezone.now()
+        self.approval_reason = reason
+        self.save()
+
 class ProjectClient(models.Model):
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_clients', null=True, blank=True)
     company_name = models.CharField(max_length=255, null=True,blank=True)
@@ -290,10 +351,12 @@ class ProjectDomain(models.Model):
 
     class Meta:
         permissions = [
-            ("view_domain_stats", "Can view domain analytics and stats"),
+            ("view_domain_stats", "Can view own domain analytics and stats"),
             ("viewnameonly_projectdomain", "can view "),
             ("viewfinancials_projectdomain", "Can view financial data of domains"),
             ("viewdates_projectdomain", "Can view purchase/expiry dates of domains"),
+            ("viewall_domain_stats" , "can view all domain and stats"),
+
         ]
 
 class ProjectServer(models.Model):
@@ -348,10 +411,12 @@ class ProjectServer(models.Model):
 
     class Meta:
         permissions = [
-            ("view_server_stats", "Can view server analytics and stats"),
+            ("view_server_stats", "Can view own server analytics and stats"),
             ("viewnameonly_projectserver", "can view "),
             ("viewfinancials_projectserver", "Can view financial data of servers"),
             ("viewdates_projectserver", "Can view purchase/expiry dates of servers"),
+            ("viewall_server_stats", "Can view all server analytics and stats"),
+
         ]
 
 class ProjectExbot(models.Model):
@@ -398,9 +463,11 @@ class ProjectExbot(models.Model):
 
     class Meta:
         permissions = [
-            ("view_exbot_stats", "Can view exbot analytics and stats"),
+            ("view_exbot_stats", "Can view own exbot analytics and stats"),
             ("viewfinancials_projectexbot", "Can view financial data of exbots"),
             ("viewdates_projectexbot", "Can view active/deactive dates of exbots"),
+            ("viewall_exbot_stats", "Can view all exbot analytics and stats"),
+
         ]
 
 class ProjectFinance(models.Model):
@@ -501,8 +568,9 @@ class Project(models.Model):
     class Meta:
         permissions = [
             ("view_analytics",    "Can view analytical dashboard"),
-            ("view_projectstats", "Can view project analytics and stats"),
-            ("viewprojectfinancestats_analytics", "Can view financial data of projects")
+            ("view_projectstats", "Can view own project analytics and stats"),
+            ("viewprojectfinancestats_analytics", "Can view financial data of projects"),
+            ("viewall_projectstats" , "can view all project analytics and stats")
         ]
  
 class ProjectDocument(models.Model):
@@ -1276,7 +1344,7 @@ class Attendance(models.Model):
 
     employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="attendance_records")
     date = models.DateField()
-    check_in = models.TimeField(blank=True, null=True)
+    check_in = models.TimeField(blank=True, null=True)  # Auto-populated on creation, editable by admin/superuser
     check_out = models.TimeField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES)
     
@@ -1293,7 +1361,35 @@ class Attendance(models.Model):
             ("reject_attendance", "Can reject attendance"),
             ("viewall_attendance", "Can view all attendance records"),
             ("viewown_attendance", "Can view own attendance records"),
+            ("checkinedit_attendance","can edit checkin attendance")
         ]
+
+    def save(self, *args, **kwargs):
+        """Auto-populate check_in with current time on creation only (if not already set)."""
+        # Only auto-set check_in on creation (when pk is None) and if it's not already provided
+        if not self.pk and not self.check_in:
+            from django.utils import timezone
+            # Convert to configured TIME_ZONE (Asia/Kolkata) then extract time
+            now_local = timezone.localtime(timezone.now())
+            self.check_in = now_local.time()
+        super().save(*args, **kwargs)
+
+    def get_total_working_hours(self):
+        """Calculate total working hours between check_in and check_out"""
+        if self.check_in and self.check_out:
+            from datetime import datetime, timedelta
+            # Create datetime objects for today
+            check_in_dt = datetime.combine(datetime.today(), self.check_in)
+            check_out_dt = datetime.combine(datetime.today(), self.check_out)
+            
+            # Handle case where check_out is next day
+            if check_out_dt < check_in_dt:
+                check_out_dt += timedelta(days=1)
+            
+            delta = check_out_dt - check_in_dt
+            hours = delta.total_seconds() / 3600
+            return round(hours, 2)
+        return 0
 
     def __str__(self):
         return f"{self.employee.username} - {self.date} - {self.status}"
@@ -1936,4 +2032,88 @@ def create_user_salary_on_increment(sender, instance, **kwargs):
             joining_date=existing_salary.joining_date,
             effective_date=instance.effective_date
         )
+
+
+@receiver(post_delete, sender=ProjectTeam)
+def delete_project_team_members_on_team_delete(sender, instance, **kwargs):
+    """
+    When a ProjectTeam is deleted, cascade delete all associated ProjectTeamMembers.
+    This ensures that team members added from a team are removed when the team is deleted.
+    """
+    # Get all ProjectTeamMembers associated with this ProjectTeam via M2M
+    team_members_to_delete = instance.members.all()
+    
+    if team_members_to_delete.exists():
+        # Delete all associated ProjectTeamMembers
+        team_members_to_delete.delete()
+
+
+class LoginUserDetails(models.Model):
+    """
+    Track all user login attempts with device and IP information.
+    Used for security auditing, login history, and device management.
+    """
+    LOGIN_STATUS_CHOICES = [
+        ('SUCCESS', 'Success'),
+        ('FAILED', 'Failed'),
+        ('BLOCKED', 'Blocked'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='login_details')
+    ip_address = models.GenericIPAddressField(help_text="User's IP address during login")
+    device_name = models.CharField(max_length=255, blank=True, null=True, help_text="Device name (e.g., 'iPhone 12', 'Windows 10')")
+    device_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('Mobile', 'Mobile'),
+            ('Tablet', 'Tablet'),
+            ('Desktop', 'Desktop'),
+            ('Other', 'Other'),
+        ],
+        default='Desktop',
+        help_text="Type of device used to login"
+    )
+    browser_name = models.CharField(max_length=100, blank=True, null=True, help_text="Browser name (e.g., 'Chrome', 'Safari')")
+    browser_version = models.CharField(max_length=50, blank=True, null=True, help_text="Browser version")
+    os_name = models.CharField(max_length=100, blank=True, null=True, help_text="Operating System (e.g., 'Windows', 'iOS')")
+    os_version = models.CharField(max_length=50, blank=True, null=True, help_text="OS version")
+    user_agent = models.TextField(blank=True, null=True, help_text="Full User-Agent string")
+    
+    login_status = models.CharField(max_length=20, choices=LOGIN_STATUS_CHOICES, default='SUCCESS')
+    login_time = models.DateTimeField(auto_now_add=True)
+    logout_time = models.DateTimeField(blank=True, null=True, help_text="Time user logged out")
+    
+    session_duration = models.DurationField(blank=True, null=True, help_text="Time spent in session")
+    
+    notes = models.TextField(blank=True, null=True, help_text="Additional notes (e.g., reason for failed login)")
+    
+    is_suspicious = models.BooleanField(default=False, help_text="Flag for suspicious login attempts")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-login_time']
+        verbose_name = "User Login Detail"
+        verbose_name_plural = "User Login Details"
+        indexes = [
+            models.Index(fields=['-login_time']),
+            models.Index(fields=['user', '-login_time']),
+            models.Index(fields=['ip_address']),
+            models.Index(fields=['is_suspicious']),
+        ]
+        permissions = [
+            ("view_all_logins", "Can view all user login details"),
+            ("view_own_logins", "Can view own login details"),
+            ("view_suspicious_logins", "Can view suspicious login attempts"),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.login_time} from {self.ip_address} ({self.device_type})"
+    
+    def save(self, *args, **kwargs):
+        """Calculate session duration when saving logout_time"""
+        if self.logout_time and not self.session_duration:
+            self.session_duration = self.logout_time - self.login_time
+        super().save(*args, **kwargs)
 

@@ -8,7 +8,8 @@ from .models import (
     ProjectService, EmployeeDailyActivity, ActivityLog, Invoice,
     InvoiceItem, Payment, ActivityExceedComment, Notification,
     EmployeeLeave, Company, CompanyProfile, Salary, Attendance,
-    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot, Lead, FollowUp, SystemAuditLog
+    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot, Lead, FollowUp, SystemAuditLog,
+    LoginUserDetails
 )
 
 # Custom UserAdmin to handle the custom User model
@@ -92,3 +93,19 @@ class SystemAuditLogAdmin(admin.ModelAdmin):
         
     def has_change_permission(self, request, obj=None):
         return False
+
+@admin.register(LoginUserDetails)
+class LoginUserDetailsAdmin(admin.ModelAdmin):
+    list_display = ('user', 'login_time', 'logout_time', 'ip_address', 'device_type', 'login_status', 'is_suspicious')
+    list_filter = ('login_status', 'device_type', 'is_suspicious', 'login_time')
+    search_fields = ('user__username', 'ip_address', 'device_name', 'browser_name')
+    readonly_fields = ('login_time', 'created_at', 'updated_at', 'session_duration')
+    
+    fieldsets = (
+        ('User & Status', {'fields': ('user', 'login_status', 'is_suspicious')}),
+        ('Timing', {'fields': ('login_time', 'logout_time', 'session_duration')}),
+        ('Device Information', {'fields': ('device_type', 'device_name', 'browser_name', 'browser_version', 'os_name', 'os_version')}),
+        ('Network', {'fields': ('ip_address',)}),
+        ('Additional Info', {'fields': ('user_agent', 'notes')}),
+        ('Timestamps', {'fields': ('created_at', 'updated_at')}),
+    )

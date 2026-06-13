@@ -75,3 +75,158 @@ def calculate_performance_metrics(activities):
         "efficiency": round(efficiency, 2),
         "total_activities": total
     }
+
+
+def get_client_ip(request):
+    """
+    Extract client IP address from request, handling proxy headers.
+    """
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0].strip()
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip
+
+
+def parse_user_agent(user_agent_string):
+    """
+    Parse user agent string to extract device, browser, and OS information.
+    Returns a dictionary with device details.
+    """
+    device_info = {
+        'device_type': 'Desktop',
+        'device_name': None,
+        'browser_name': None,
+        'browser_version': None,
+        'os_name': None,
+        'os_version': None,
+    }
+    
+    if not user_agent_string:
+        return device_info
+    
+    ua = user_agent_string.lower()
+    
+    # Detect Device Type
+    if 'mobile' in ua or 'android' in ua:
+        device_info['device_type'] = 'Mobile'
+    elif 'tablet' in ua or 'ipad' in ua:
+        device_info['device_type'] = 'Tablet'
+    elif 'windows' in ua or 'macintosh' in ua or 'linux' in ua:
+        device_info['device_type'] = 'Desktop'
+    
+    # Detect OS
+    if 'windows' in ua:
+        device_info['os_name'] = 'Windows'
+        # Extract version
+        if 'nt 10.0' in ua:
+            device_info['os_version'] = '10'
+        elif 'nt 6.3' in ua:
+            device_info['os_version'] = '8.1'
+        elif 'nt 6.2' in ua:
+            device_info['os_version'] = '8'
+    elif 'macintosh' in ua:
+        device_info['os_name'] = 'macOS'
+        if 'mac os x' in ua:
+            import re
+            match = re.search(r'mac os x ([\d_]+)', ua)
+            if match:
+                device_info['os_version'] = match.group(1).replace('_', '.')
+    elif 'iphone' in ua:
+        device_info['os_name'] = 'iOS'
+        device_info['device_name'] = 'iPhone'
+        import re
+        match = re.search(r'os ([\d_]+)', ua)
+        if match:
+            device_info['os_version'] = match.group(1).replace('_', '.')
+    elif 'ipad' in ua:
+        device_info['os_name'] = 'iOS'
+        device_info['device_name'] = 'iPad'
+    elif 'android' in ua:
+        device_info['os_name'] = 'Android'
+        import re
+        match = re.search(r'android ([\d.]+)', ua)
+        if match:
+            device_info['os_version'] = match.group(1)
+    elif 'linux' in ua:
+        device_info['os_name'] = 'Linux'
+    
+    # Detect Browser
+    if 'edg' in ua:
+        device_info['browser_name'] = 'Edge'
+        import re
+        match = re.search(r'edg/([\d.]+)', ua)
+        if match:
+            device_info['browser_version'] = match.group(1)
+    elif 'chrome' in ua:
+        device_info['browser_name'] = 'Chrome'
+        import re
+        match = re.search(r'chrome/([\d.]+)', ua)
+        if match:
+            device_info['browser_version'] = match.group(1)
+    elif 'safari' in ua and 'chrome' not in ua:
+        device_info['browser_name'] = 'Safari'
+        import re
+        match = re.search(r'version/([\d.]+)', ua)
+        if match:
+            device_info['browser_version'] = match.group(1)
+    elif 'firefox' in ua:
+        device_info['browser_name'] = 'Firefox'
+        import re
+        match = re.search(r'firefox/([\d.]+)', ua)
+        if match:
+            device_info['browser_version'] = match.group(1)
+    elif 'trident' in ua:
+        device_info['browser_name'] = 'Internet Explorer'
+    
+    return device_info
+
+
+def record_user_login(user, request, login_status='SUCCESS', notes=None):
+    """
+    Record a user login attempt in the LoginUserDetails model.
+    """
+    from .models import LoginUserDetails
+    
+    ip_address = get_client_ip(request)
+    user_agent = request.META.get('HTTP_USER_AGENT', '')
+    device_info = parse_user_agent(user_agent)
+    
+    login_detail = LoginUserDetails.objects.create(
+        user=user,
+        ip_address=ip_address,
+        device_type=device_info['device_type'],
+        device_name=device_info['device_name'],
+        browser_name=device_info['browser_name'],
+        browser_version=device_info['browser_version'],
+        os_name=device_info['os_name'],
+        os_version=device_info['os_version'],
+        user_agent=user_agent,
+        login_status=login_status,
+        notes=notes,
+    )
+    
+    return login_detail
+
+
+def record_user_logout(user):
+    """
+    Record a user logout by updating the most recent active login record.
+    Sets logout_time to now, which automatically calculates session_duration via model save().
+    """
+    from .models import LoginUserDetails
+    from django.utils import timezone
+    
+    # Find the most recent active login record (no logout_time set)
+    active_login = LoginUserDetails.objects.filter(
+        user=user,
+        logout_time__isnull=True
+    ).order_by('-login_time').first()
+    
+    if active_login:
+        active_login.logout_time = timezone.now()
+        active_login.save()
+        return active_login
+    
+    return None

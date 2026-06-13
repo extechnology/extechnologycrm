@@ -25,11 +25,11 @@ from .views import (
     InvoicePaymentListCreateAPIView, InvoicePaymentDetailAPIView,
     ActivityExceedCommentListCreateAPIView, ActivityExceedCommentDetailAPIView,
     NotificationListCreateAPIView, NotificationDetailAPIView,
-    EmployeeLeaveListCreateAPIView, EmployeeLeaveDetailAPIView,
+    EmployeeLeaveListCreateAPIView, EmployeeLeaveDetailAPIView, EmployeeLeaveExportAPIView,
     CompanyListCreateAPIView, CompanyDetailAPIView,
     CompanyProfileListCreateAPIView, CompanyProfileDetailAPIView,
     SalaryListCreateAPIView, SalaryDetailAPIView, EmployeeSalarySummaryListAPIView,
-    AttendanceListCreateAPIView, AttendanceDetailAPIView,
+    AttendanceListCreateAPIView, AttendanceDetailAPIView, AttendanceExportAPIView,
     EmployeeListCreateAPIView, EmployeeDetailAPIView,
     UserSalaryListCreateAPIView, UserSalaryDetailAPIView, SalaryIncrementListCreateAPIView, SalaryIncrementDetailAPIView,
     OtherIncomeListCreateAPIView, OtherIncomeDetailAPIView,
@@ -50,6 +50,9 @@ from .views import (
     MarkAllNotificationsReadAPIView,
     LeadViewSet, FollowUpViewSet, LeadDashboardStatsAPIView,
     ScheduleListCreateAPIView, ScheduleDetailAPIView,
+    LoginHistoryListAPIView, LoginHistoryDetailAPIView, CurrentUserLoginHistoryAPIView, SuspiciousLoginsAPIView,
+    LoginUserDetailsListCreateAPIView, LoginUserDetailsDetailAPIView,
+    DeviceListCreateAPIView, DeviceDetailAPIView, DeviceApprovalAPIView, PendingDevicesAPIView,
 )
 
 from .financial_views import (
@@ -71,6 +74,11 @@ urlpatterns = [
     path('api/users/designations/', UserDesignationsAPIView.as_view(), name='api-user-designations'),
     path('api/change-password/', ChangePasswordView.as_view(), name='api-change-password'),
     path('api/admin-change-password/<int:pk>/', AdminChangeUserPasswordView.as_view(), name='api-admin-change-password'),
+    # Device management endpoints
+    path('api/devices/', DeviceListCreateAPIView.as_view(), name='api-device-list-create'),
+    path('api/devices/<int:id>/', DeviceDetailAPIView.as_view(), name='api-device-detail'),
+    path('api/devices/<int:device_id>/approve/', DeviceApprovalAPIView.as_view(), name='api-device-approve'),
+    path('api/admin/pending-devices/', PendingDevicesAPIView.as_view(), name='api-pending-devices'),
     path('api/roles/', RoleListCreateAPIView.as_view(), name='api-role-list-create'),
     path('api/roles/<int:pk>/', RoleDetailAPIView.as_view(), name='api-role-detail'),
     path('api/project-clients/', ProjectClientListCreateAPIView.as_view(), name='api-project-client-list-create'),
@@ -94,7 +102,6 @@ urlpatterns = [
     path('api/project-teams/<int:pk>/', ProjectTeamDetailAPIView.as_view(), name='api-project-team-detail'),
     path('api/project-natures/', ProjectNatureListCreateAPIView.as_view(), name='api-project-nature-list-create'),
     path('api/project-natures/<int:pk>/', ProjectNatureDetailAPIView.as_view(), name='api-project-nature-detail'),
-
     path('api/projects/', ProjectListCreateAPIView.as_view(), name='api-project-list-create'),
     path('api/projects/summary/', ProjectSummaryListAPIView.as_view(), name='api-project-summary-list'),
     path('api/projects/<int:pk>/', ProjectDetailAPIView.as_view(), name='api-project-detail'),
@@ -130,6 +137,7 @@ urlpatterns = [
     path('api/notifications/unread-count/', UnreadNotificationCountAPIView.as_view(), name='api-notification-unread-count'),
     path('api/notifications/mark-all-read/', MarkAllNotificationsReadAPIView.as_view(), name='api-notification-mark-all-read'),
     path('api/notifications/<int:pk>/', NotificationDetailAPIView.as_view(), name='api-notification-detail'),
+    path('api/employee-leaves/export/', EmployeeLeaveExportAPIView.as_view(), name='api-employee-leave-export'),
     path('api/employee-leaves/', EmployeeLeaveListCreateAPIView.as_view(), name='api-employee-leave-list-create'),
     path('api/employee-leaves/<int:pk>/', EmployeeLeaveDetailAPIView.as_view(), name='api-employee-leave-detail'),
     path('api/companies/', CompanyListCreateAPIView.as_view(), name='api-company-list-create'),
@@ -139,6 +147,7 @@ urlpatterns = [
     path('api/salaries/', SalaryListCreateAPIView.as_view(), name='api-salary-list-create'),
     path('api/salaries/summary/', EmployeeSalarySummaryListAPIView.as_view(), name='api-salary-summary-list'),
     path('api/salaries/<int:pk>/', SalaryDetailAPIView.as_view(), name='api-salary-detail'),
+    path('api/attendance/export/', AttendanceExportAPIView.as_view(), name='api-attendance-export'),
     path('api/attendance/', AttendanceListCreateAPIView.as_view(), name='api-attendance-list-create'),
     path('api/attendance/<int:pk>/', AttendanceDetailAPIView.as_view(), name='api-attendance-detail'),
     path('api/employees/', EmployeeListCreateAPIView.as_view(), name='api-employee-list-create'),
@@ -148,7 +157,6 @@ urlpatterns = [
     path('api/salary-increments/', SalaryIncrementListCreateAPIView.as_view(), name='api-salary-increment-list-create'),
     path('api/salary-increments/<int:pk>/', SalaryIncrementDetailAPIView.as_view(), name='api-salary-increment-detail'),
     path('api/other-incomes/', OtherIncomeListCreateAPIView.as_view(), name='api-other-income-list-create'),
-
     path('api/other-incomes/<int:pk>/', OtherIncomeDetailAPIView.as_view(), name='api-other-income-detail'),
     path('api/other-expenses/', OtherExpenseListCreateAPIView.as_view(), name='api-other-expense-list-create'),
     path('api/other-expenses/<int:pk>/', OtherExpenseDetailAPIView.as_view(), name='api-other-expense-detail'),
@@ -166,4 +174,14 @@ urlpatterns = [
     path('api/followups/<int:pk>/', FollowUpViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='api-followup-detail'),
     path('api/schedules/', ScheduleListCreateAPIView.as_view(), name='api-schedule-list-create'),
     path('api/schedules/<int:pk>/', ScheduleDetailAPIView.as_view(), name='api-schedule-detail'),
+    
+    # Login History API endpoints
+    path('api/login-history/', LoginHistoryListAPIView.as_view(), name='api-login-history-list'),
+    path('api/login-history/<int:pk>/', LoginHistoryDetailAPIView.as_view(), name='api-login-history-detail'),
+    path('api/login-history/me/', CurrentUserLoginHistoryAPIView.as_view(), name='api-current-user-login-history'),
+    path('api/login-history/suspicious/', SuspiciousLoginsAPIView.as_view(), name='api-suspicious-logins'),
+    
+    # Login User Details API endpoints
+    path('api/login-user-details/', LoginUserDetailsListCreateAPIView.as_view(), name='api-login-user-details-list'),
+    path('api/login-user-details/<int:pk>/', LoginUserDetailsDetailAPIView.as_view(), name='api-login-user-details-detail'),
 ]

@@ -10,7 +10,7 @@ from .models import (
     ProjectServiceTeam,ProjectServiceMember,ProjectDocument,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,SalaryIncrement,
-    ClientAdvance,ProjectExbot,Lead,FollowUp,Schedule
+    ClientAdvance,ProjectExbot,Lead,FollowUp,Schedule,LoginUserDetails,Device
 )
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -68,6 +68,38 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 class AdminChangePasswordSerializer(serializers.Serializer):
     new_password = serializers.CharField(required=True)
+
+
+class DeviceSerializer(serializers.ModelSerializer):
+    """Serializer for Device model - handles user device registration and approval"""
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    approved_by_username = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = Device
+        fields = [
+            'id',
+            'user',
+            'user_username',
+            'device_name',
+            'device_id',
+            'device_type',
+            'is_approved',
+            'approved_by',
+            'approved_by_username',
+            'approved_at',
+            'approval_reason',
+            'last_login',
+            'login_count',
+            'device_info',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'approved_by', 'approved_at', 'last_login', 'login_count', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'user': {'required': False},
+            'approval_reason': {'required': False},
+        }
 
 
 class ProjectClientSerializer(serializers.ModelSerializer):
@@ -1099,6 +1131,26 @@ class EmployeeSalarySummarySerializer(serializers.ModelSerializer):
         last_salary = obj.salaries.order_by('-end_date').first()
         return last_salary.end_date if last_salary else None
 
+
+class LoginUserDetailsSerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source='user.username', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    
+    class Meta:
+        model = LoginUserDetails
+        fields = [
+            'id', 'user', 'user_name', 'user_email', 'ip_address', 'device_type', 
+            'device_name', 'browser_name', 'browser_version', 'os_name', 'os_version', 
+            'user_agent', 'login_status', 'login_time', 'logout_time', 'session_duration',
+            'is_suspicious', 'notes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'user', 'ip_address', 'device_type', 'device_name', 'browser_name',
+            'browser_version', 'os_name', 'os_version', 'user_agent', 'login_time',
+            'session_duration', 'created_at', 'updated_at'
+        ]
+
+
 class SalarySerializer(serializers.ModelSerializer):
     employee_name = serializers.ReadOnlyField(source='employee.username')
     absent_days = serializers.SerializerMethodField()
@@ -1120,10 +1172,30 @@ class SalarySerializer(serializers.ModelSerializer):
 class AttendanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     project_names = serializers.SerializerMethodField()
+    total_working_hours = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
         fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Check if user has permission to edit check_in
+        request = self.context.get('request')
+        if request and request.user:
+            # Superuser or user with checkinedit_attendance permission can edit check_in
+            has_perm = (
+                request.user.is_superuser or 
+                request.user.has_perm('djangosimplemissionapp.checkinedit_attendance')
+            )
+            
+            # If user cannot edit, mark check_in as read-only
+            if not has_perm:
+                self.fields['check_in'].read_only = True
+        else:
+            # If no request context, make it read-only by default
+            self.fields['check_in'].read_only = True
 
     def get_employee_name(self, obj):
         if obj.employee.first_name or obj.employee.last_name:
@@ -1142,6 +1214,10 @@ class AttendanceSerializer(serializers.ModelSerializer):
                 projects.append(m.project.name)
         
         return ", ".join(set(projects)) if projects else "No Project"
+
+    def get_total_working_hours(self, obj):
+        """Get total working hours from the model method"""
+        return obj.get_total_working_hours()
 
     def validate(self, attrs):
         request = self.context.get('request')

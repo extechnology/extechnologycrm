@@ -18,7 +18,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from djangosimplemissionapp.views import CustomTokenObtainPairView
+from djangosimplemissionapp.views import CustomTokenObtainPairView, LogoutView
 from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
@@ -26,6 +26,7 @@ urlpatterns = [
     path('', include('djangosimplemissionapp.urls')),
     path('api/token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/logout/', LogoutView.as_view(), name='api-logout'),
 ]
 
 if settings.DEBUG:

@@ -402,7 +402,12 @@ class ProjectAnalyticalAPIView(APIView):
             create_notification_if_new(superadmins, message, project=exbot.project, notification_type='exbot_alert')
 
     def get(self, request):
-        if not request.user.has_perm('djangosimplemissionapp.view_projectstats'):
+        # Check permissions - must have at least view_projectstats
+        has_view_own = request.user.has_perm('djangosimplemissionapp.view_projectstats')
+        # Only allow viewing all if: superuser OR has explicit viewall permission
+        has_view_all = request.user.is_superuser or request.user.has_perm('djangosimplemissionapp.viewall_projectstats')
+        
+        if not has_view_own:
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
             
         # Auto-trigger expiry check every time this API is called
@@ -413,9 +418,23 @@ class ProjectAnalyticalAPIView(APIView):
         from .models import Project, ProjectService, ProjectFinance, ProjectTeam, ProjectServiceTeam
         from rest_framework.pagination import PageNumberPagination
         
-        projects = Project.objects.prefetch_related(
-            'services', 'project_finances', 'project_teams__team'
-        ).order_by('-created_at')
+        # Filter projects based on permission level
+        if has_view_all:
+            # Admin/SuperUser: see ALL projects
+            projects = Project.objects.prefetch_related(
+                'services', 'project_finances', 'project_teams__team'
+            ).order_by('-created_at')
+        else:
+            # Regular user: see ONLY projects where they are a TEAM member
+            user_project_ids = ProjectTeam.objects.filter(
+                members__employee=request.user
+            ).values_list('project_id', flat=True).distinct()
+            
+            projects = Project.objects.filter(
+                id__in=user_project_ids
+            ).prefetch_related(
+                'services', 'project_finances', 'project_teams__team'
+            ).order_by('-created_at')
         
         # 1. Search Filter
         search_query = request.query_params.get('search', '')
@@ -493,9 +512,18 @@ class ProjectAnalyticalAPIView(APIView):
         # But if you click 'Pending', should Pulse change? usually NO, it stays as the constant summary.
         # So we use the 'unfiltered-by-status' projects list for Overview.
         
-        # Re-apply date/search only for overview
-        ov_projects = Project.objects.filter(date_q) if date_q else Project.objects.all()
-        if search_query: ov_projects = ov_projects.filter(name__icontains=search_query)
+        # Re-apply date/search only for overview (with permission filtering)
+        if has_view_all:
+            # Admin/SuperUser: see ALL projects
+            ov_projects = Project.objects.all()
+        else:
+            # Regular user: see ONLY their assigned projects
+            ov_projects = Project.objects.filter(id__in=user_project_ids)
+        
+        if date_q:
+            ov_projects = ov_projects.filter(date_q)
+        if search_query:
+            ov_projects = ov_projects.filter(name__icontains=search_query)
 
         total_teams = 0
         for p in ov_projects:
@@ -858,10 +886,15 @@ class ServerAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not request.user.has_perm('djangosimplemissionapp.view_server_stats'):
+        # Check permissions - must have at least view_server_stats
+        has_view_own = request.user.has_perm('djangosimplemissionapp.view_server_stats')
+        # Only allow viewing all if: superuser OR has explicit viewall permission
+        has_view_all = request.user.is_superuser or request.user.has_perm('djangosimplemissionapp.viewall_server_stats')
+        
+        if not has_view_own:
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
             
-        from .models import ProjectServer
+        from .models import ProjectServer, ProjectTeamMember
         from django.db.models import Count, Sum
         from django.utils import timezone
         from datetime import timedelta
@@ -870,13 +903,30 @@ class ServerAnalyticsAPIView(APIView):
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
-        # Get all servers ordered to help deduplication (latest expiration first)
-        all_servers = ProjectServer.objects.all().select_related('project').order_by('project_id', 'server_type', 'name', '-expiration_date')
+        # Filter servers based on permission level
+        if has_view_all:
+            # Admin/SuperUser: see ALL servers
+            all_servers = ProjectServer.objects.all().select_related('project').order_by('project_id', 'server_type', 'name', '-expiration_date')
+        else:
+            # Regular user: see ONLY servers from projects where they are a TEAM member
+            from .models import ProjectTeam
+            user_project_ids = ProjectTeam.objects.filter(
+                members__employee=request.user
+            ).values_list('project_id', flat=True).distinct()
+            
+            all_servers = ProjectServer.objects.filter(
+                project_id__in=user_project_ids
+            ).select_related('project').order_by('project_id', 'server_type', 'name', '-expiration_date')
         
         # Deduplicate: Only keep the latest record for each (Project, Type, Name)
+        # For regular users: SKIP servers with null/empty names
+        # For superusers/viewall: SHOW ALL servers including null names
         servers_list_latest = []
         seen_keys = set()
         for s in all_servers:
+            # Only skip null names for regular users (not superusers/viewall)
+            if not has_view_all and not s.name:
+                continue
             key = (s.project_id, s.server_type, s.name)
             if key not in seen_keys:
                 servers_list_latest.append(s)
@@ -962,10 +1012,18 @@ class DomainAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not request.user.has_perm('djangosimplemissionapp.view_domain_stats'):
-            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        # Check permissions - must have at least view_domain_stats
+        has_view_own = request.user.has_perm('djangosimplemissionapp.view_domain_stats')
+        # Only allow viewing all if: superuser OR has explicit viewall permission
+        has_view_all = request.user.is_superuser or request.user.has_perm('djangosimplemissionapp.viewall_domain_stats')
+        
+        if not has_view_own:
+            return Response(
+                {'error': 'Permission denied. User must have "view_domain_stats" permission.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
             
-        from .models import ProjectDomain
+        from .models import ProjectDomain, ProjectTeamMember
         from django.db.models import Count, Sum
         from django.utils import timezone
         from datetime import timedelta
@@ -974,13 +1032,38 @@ class DomainAnalyticsAPIView(APIView):
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
-        # Get all domains ordered to help deduplication (latest expiration first)
-        all_domains = ProjectDomain.objects.all().select_related('project').order_by('project_id', 'name', '-expiration_date')
+        # Filter domains based on permission level
+        if has_view_all:
+            # Superuser OR has explicit viewall permission: see ALL domains
+            all_domains = ProjectDomain.objects.all().select_related('project').order_by('project_id', 'name', '-expiration_date')
+            debug_info = {"mode": "view_all", "user_can_see": "ALL domains"}
+        else:
+            # Regular user with only view_domain_stats: see ONLY domains from projects where they are a TEAM member
+            from .models import ProjectTeam
+            user_project_ids = ProjectTeam.objects.filter(
+                members__employee=request.user
+            ).values_list('project_id', flat=True).distinct()
+            
+            # DEBUG: Check if user is in any projects
+            debug_info = {
+                "mode": "view_own",
+                "user_project_count": len(user_project_ids),
+                "user_project_ids": list(user_project_ids)
+            }
+            
+            all_domains = ProjectDomain.objects.filter(
+                project_id__in=user_project_ids
+            ).select_related('project').order_by('project_id', 'name', '-expiration_date')
         
         # Deduplicate: Only keep the latest record for each (Project, Name)
+        # For regular users: SKIP domains with null/empty names
+        # For superusers/viewall: SHOW ALL domains including null names
         domains_list_latest = []
         seen_keys = set()
         for d in all_domains:
+            # Only skip null names for regular users (not superusers/viewall)
+            if not has_view_all and not d.name:
+                continue
             key = (d.project_id, d.name)
             if key not in seen_keys:
                 domains_list_latest.append(d)
@@ -1040,6 +1123,7 @@ class DomainAnalyticsAPIView(APIView):
         )
 
         data = {
+            "debug": debug_info,  # DEBUG INFO
             "overview": {
                 "total_domains": total_domains,
                 "active_domains": active_domains,
@@ -1060,10 +1144,15 @@ class ExbotAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not request.user.has_perm('djangosimplemissionapp.view_exbot_stats'):
+        # Check permissions - must have at least view_exbot_stats
+        has_view_own = request.user.has_perm('djangosimplemissionapp.view_exbot_stats')
+        # Only allow viewing all if: superuser OR has explicit viewall permission
+        has_view_all = request.user.is_superuser or request.user.has_perm('djangosimplemissionapp.viewall_exbot_stats')
+        
+        if not has_view_own:
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         
-        from .models import ProjectExbot
+        from .models import ProjectExbot, ProjectTeamMember
         from django.db.models import Count, Sum
         from django.utils import timezone
         from datetime import timedelta
@@ -1072,10 +1161,27 @@ class ExbotAnalyticsAPIView(APIView):
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
-        # Get all exbots
-        all_exbots = ProjectExbot.objects.all().select_related('project').order_by('project_id', 'whatsapp_number', '-plan_deactive_date')
+        # Filter exbots based on permission level
+        if has_view_all:
+            # Admin/SuperUser: see ALL exbots
+            all_exbots = ProjectExbot.objects.all().select_related('project').order_by('project_id', 'whatsapp_number', '-plan_deactive_date')
+        else:
+            # Regular user: see ONLY exbots from projects where they are a TEAM member
+            from .models import ProjectTeam
+            user_project_ids = ProjectTeam.objects.filter(
+                members__employee=request.user
+            ).values_list('project_id', flat=True).distinct()
+            
+            all_exbots = ProjectExbot.objects.filter(
+                project_id__in=user_project_ids
+            ).select_related('project').order_by('project_id', 'whatsapp_number', '-plan_deactive_date')
         
-        exbots_list = list(all_exbots)
+        # For regular users: Skip exbots with null WhatsApp numbers
+        # For superusers/viewall: SHOW ALL exbots including null numbers
+        if has_view_all:
+            exbots_list = list(all_exbots)
+        else:
+            exbots_list = [e for e in all_exbots if e.whatsapp_number]
 
         total_exbots = len(exbots_list)
         

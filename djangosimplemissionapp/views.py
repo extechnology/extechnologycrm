@@ -384,13 +384,28 @@ class DeviceListCreateAPIView(ListCreateAPIView):
     """
     serializer_class = DeviceSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
-        """Users can only see their own devices, admins can see all"""
+        """Users can only see their own devices, admins can see all (with optional user filtering)"""
         user = self.request.user
         if user.is_superuser or user.has_perm('djangosimplemissionapp.view_all_devices'):
-            return Device.objects.all()
+            queryset = Device.objects.all()
+            user_id = self.request.query_params.get('user')
+            if user_id:
+                queryset = queryset.filter(user_id=user_id)
+            return queryset
         return user.devices.all()
+
+    def delete(self, request, *args, **kwargs):
+        """Delete all device records. Restricted to superuser or users with delete_device permission."""
+        user = request.user
+        if not (user.is_superuser or user.has_perm('djangosimplemissionapp.delete_device')):
+            return Response({'error': 'You do not have permission to delete all devices.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Delete all devices
+        deleted_count, _ = Device.objects.all().delete()
+        return Response({'message': f'Successfully deleted all {deleted_count} devices.'}, status=status.HTTP_200_OK)
     
     def create(self, request, *args, **kwargs):
         """Register a new device"""
@@ -508,6 +523,7 @@ class PendingDevicesAPIView(ListAPIView):
     """
     serializer_class = DeviceSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
         # Check permission
@@ -4019,6 +4035,16 @@ class LoginUserDetailsListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['user__username', 'ip_address', 'device_name', 'browser_name']
 
+    def delete(self, request, *args, **kwargs):
+        """Delete all login user details. Restricted to superuser or users with delete_loginuserdetails permission."""
+        user = request.user
+        if not (user.is_superuser or user.has_perm('djangosimplemissionapp.delete_loginuserdetails')):
+            return Response({'error': 'You do not have permission to delete all login records.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Delete all login records
+        deleted_count, _ = LoginUserDetails.objects.all().delete()
+        return Response({'message': f'Successfully deleted all {deleted_count} login records.'}, status=status.HTTP_200_OK)
+
     def get_queryset(self):
         queryset = LoginUserDetails.objects.all().order_by('-login_time')
         
@@ -4042,6 +4068,21 @@ class LoginUserDetailsListCreateAPIView(ListCreateAPIView):
         if is_suspicious:
             queryset = queryset.filter(is_suspicious=is_suspicious.lower() == 'true')
         
+        # Filter by year if specified
+        year = self.request.query_params.get('year')
+        if year:
+            queryset = queryset.filter(login_time__year=year)
+            
+        # Filter by start date if specified
+        start_date = self.request.query_params.get('start_date')
+        if start_date:
+            queryset = queryset.filter(login_time__date__gte=start_date)
+            
+        # Filter by end date if specified
+        end_date = self.request.query_params.get('end_date')
+        if end_date:
+            queryset = queryset.filter(login_time__date__lte=end_date)
+        
         return queryset
 
 
@@ -4054,3 +4095,178 @@ class LoginUserDetailsDetailAPIView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
 
+class LoginUserDetailsExportAPIView(APIView):
+    """Export login user details to Excel or Word format"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from docx import Document
+        from django.http import FileResponse
+        from django.utils import timezone
+        import io
+
+        export_format = request.query_params.get('export_format', 'excel').lower()
+        if export_format not in ['excel', 'word']:
+            return Response({'error': 'Invalid export_format. Use "excel" or "word"'}, status=400)
+
+        queryset = LoginUserDetails.objects.all().order_by('-login_time')
+
+        # Filter by user if specified
+        user_id = request.query_params.get('user_id')
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        
+        # Filter by login status (case-insensitive)
+        login_status = request.query_params.get('login_status')
+        if login_status:
+            queryset = queryset.filter(login_status__iexact=login_status)
+        
+        # Filter by device type (case-insensitive)
+        device_type = request.query_params.get('device_type')
+        if device_type:
+            queryset = queryset.filter(device_type__iexact=device_type)
+        
+        # Filter by suspicious flag
+        is_suspicious = request.query_params.get('is_suspicious')
+        if is_suspicious:
+            queryset = queryset.filter(is_suspicious=is_suspicious.lower() == 'true')
+
+        # Filter by year if specified
+        year = request.query_params.get('year')
+        if year:
+            queryset = queryset.filter(login_time__year=year)
+            
+        # Filter by start date if specified
+        start_date = request.query_params.get('start_date')
+        if start_date:
+            queryset = queryset.filter(login_time__date__gte=start_date)
+            
+        # Filter by end date if specified
+        end_date = request.query_params.get('end_date')
+        if end_date:
+            queryset = queryset.filter(login_time__date__lte=end_date)
+
+        # Apply search if specified
+        search = request.query_params.get('search')
+        if search:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(user__username__icontains=search) |
+                Q(ip_address__icontains=search) |
+                Q(device_name__icontains=search) |
+                Q(browser_name__icontains=search)
+            )
+
+        if export_format == 'excel':
+            return self._export_to_excel(queryset)
+        else:
+            return self._export_to_word(queryset)
+
+    def _export_to_excel(self, queryset):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from django.http import FileResponse
+        from django.utils import timezone
+        import io
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Login Details"
+
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        headers = ['#', 'Username', 'Login Time', 'Logout Time', 'IP Address', 'Device Type', 'Device Name', 'Browser', 'OS', 'Status', 'Suspicious']
+        worksheet.append(headers)
+
+        for cell in worksheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        for idx, record in enumerate(queryset, 1):
+            login_time_str = timezone.localtime(record.login_time).strftime('%Y-%m-%d %H:%M:%S') if record.login_time else '—'
+            logout_time_str = timezone.localtime(record.logout_time).strftime('%Y-%m-%d %H:%M:%S') if record.logout_time else '—'
+            
+            row = [
+                idx,
+                record.user.username if record.user else '—',
+                login_time_str,
+                logout_time_str,
+                record.ip_address or '—',
+                record.device_type or '—',
+                record.device_name or '—',
+                f"{record.browser_name or ''} {record.browser_version or ''}".strip() or '—',
+                f"{record.os_name or ''} {record.os_version or ''}".strip() or '—',
+                record.login_status or '—',
+                'Yes' if record.is_suspicious else 'No'
+            ]
+            worksheet.append(row)
+            for cell in worksheet[worksheet.max_row]:
+                cell.border = thin_border
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        buffer.seek(0)
+
+        response = FileResponse(
+            buffer,
+            as_attachment=True,
+            filename=f"login_details_{timezone.now().strftime('%Y%m%d')}.xlsx",
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        return response
+
+    def _export_to_word(self, queryset):
+        from docx import Document
+        from django.http import FileResponse
+        from django.utils import timezone
+        import io
+
+        doc = Document()
+        doc.add_heading('User Login Details Report', 0)
+
+        table = doc.add_table(rows=1, cols=11)
+        hdr_cells = table.rows[0].cells
+        headers = ['#', 'Username', 'Login Time', 'Logout Time', 'IP Address', 'Device Type', 'Device Name', 'Browser', 'OS', 'Status', 'Suspicious']
+        for i, h in enumerate(headers):
+            hdr_cells[i].text = h
+
+        for idx, record in enumerate(queryset, 1):
+            row_cells = table.add_row().cells
+            login_time_str = timezone.localtime(record.login_time).strftime('%Y-%m-%d %H:%M:%S') if record.login_time else '—'
+            logout_time_str = timezone.localtime(record.logout_time).strftime('%Y-%m-%d %H:%M:%S') if record.logout_time else '—'
+            
+            row_cells[0].text = str(idx)
+            row_cells[1].text = record.user.username if record.user else '—'
+            row_cells[2].text = login_time_str
+            row_cells[3].text = logout_time_str
+            row_cells[4].text = record.ip_address or '—'
+            row_cells[5].text = record.device_type or '—'
+            row_cells[6].text = record.device_name or '—'
+            row_cells[7].text = f"{record.browser_name or ''} {record.browser_version or ''}".strip() or '—'
+            row_cells[8].text = f"{record.os_name or ''} {record.os_version or ''}".strip() or '—'
+            row_cells[9].text = record.login_status or '—'
+            row_cells[10].text = 'Yes' if record.is_suspicious else 'No'
+
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        buffer.seek(0)
+
+        response = FileResponse(
+            buffer,
+            as_attachment=True,
+            filename=f"login_details_{timezone.now().strftime('%Y%m%d')}.docx",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        return response

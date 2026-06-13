@@ -51,7 +51,7 @@ from .views import (
     LeadViewSet, FollowUpViewSet, LeadDashboardStatsAPIView,
     ScheduleListCreateAPIView, ScheduleDetailAPIView,
     LoginHistoryListAPIView, LoginHistoryDetailAPIView, CurrentUserLoginHistoryAPIView, SuspiciousLoginsAPIView,
-    LoginUserDetailsListCreateAPIView, LoginUserDetailsDetailAPIView,
+    LoginUserDetailsListCreateAPIView, LoginUserDetailsDetailAPIView, LoginUserDetailsExportAPIView,
     DeviceListCreateAPIView, DeviceDetailAPIView, DeviceApprovalAPIView, PendingDevicesAPIView,
 )
 
@@ -182,6 +182,7 @@ urlpatterns = [
     path('api/login-history/suspicious/', SuspiciousLoginsAPIView.as_view(), name='api-suspicious-logins'),
     
     # Login User Details API endpoints
+    path('api/login-user-details/export/', LoginUserDetailsExportAPIView.as_view(), name='api-login-user-details-export'),
     path('api/login-user-details/', LoginUserDetailsListCreateAPIView.as_view(), name='api-login-user-details-list'),
     path('api/login-user-details/<int:pk>/', LoginUserDetailsDetailAPIView.as_view(), name='api-login-user-details-detail'),
 ]

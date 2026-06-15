@@ -260,9 +260,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                         is_approved=False
                     )
                     raise serializers.ValidationError(
-                        'admin permission requird singnup',
+                        'admin permission required for signup',
                         code='device_pending_approval'
-                    )
+                    ) 
                 else:
                     # First device - auto-approve for now
                     from .models import Device

@@ -260,7 +260,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                         is_approved=False
                     )
                     raise serializers.ValidationError(
-                        'New device detected. Your device has been registered and is awaiting admin approval. Please contact your administrator.',
+                        'admin permission requird singnup',
                         code='device_pending_approval'
                     )
                 else:
